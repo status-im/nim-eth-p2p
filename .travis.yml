@@ -16,7 +16,7 @@ before_script:
   - export PATH=$(pwd)/bin:$PATH
   - cd ..
   - nimble install https://github.com/status-im/nim-rlp
-  - nimble install https://github.com/cheatfate/nimcrypto >= 0.1.0
+  - nimble install https://github.com/cheatfate/nimcrypto
   - nimble install https://github.com/status-im/nim-secp256k1
 script:
   - nimble tests
