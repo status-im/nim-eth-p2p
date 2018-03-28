@@ -26,6 +26,23 @@ type
     IncorrectKey,   ## Recovered public key is invalid
     IncorrectTag    ## ECIES tag verification failed
 
+when false:
+  # REVIEW(zah):
+  # Why do we work with arrays and known fixed offsets (such sa eciesIvPos)
+  # instead of defining object types with named fields:
+  type
+    EciesPrefix = object
+      leadingByte: byte
+      pubKey: PublicKey
+      iv: array[aes128.sizeBlock]
+
+  # You can then write to these fields by doing:
+  var eciesPrefix = cast[ptr EciesPrefix](addr array[0])
+  eciesPrefix.pubKey = ...
+  eciesPrefix.iv = ...
+
+  # This will make the code slightly easier to read and review for correctness
+
 template eciesOverheadLength*(): int =
   ## Return data overhead size for ECIES encrypted message
   1 + sizeof(PublicKey) + aes128.sizeBlock + sha256.sizeDigest
@@ -61,6 +78,8 @@ proc kdf*(data: openarray[byte]): array[KeyLength, byte] {.noInit.} =
   var counterLe: uint32
   let reps = ((KeyLength + 7) * 8) div (int(ctx.sizeDigest) * 8)
   var offset = 0
+  # REVIEW: There is a relationship between KeyLength and sha256.sizeDigest here
+  # that could be expressed in the code with a static assert.
   var storage = newSeq[byte](KeyLength * (reps + 1))
   while counter <= uint32(reps):
     counter = counter + 1
@@ -68,12 +87,15 @@ proc kdf*(data: openarray[byte]): array[KeyLength, byte] {.noInit.} =
     ctx.init()
     ctx.update(cast[ptr byte](addr counterLe), uint(sizeof(uint32)))
     ctx.update(unsafeAddr data[0], uint(len(data)))
+    # REVIEW: unnecessary copy here
     var hash = ctx.finish().data
     copyMem(addr storage[offset], addr hash[0], ctx.sizeDigest)
-    offset = offset + int(ctx.sizeDigest)
+    offset += int(ctx.sizeDigest)
   ctx.init() # clean ctx
   copyMem(addr result[0], addr storage[0], KeyLength)
 
+# REVIEW(zah): We can make Araq happy by using the new openarray
+# for these input and output parameters
 proc eciesEncrypt*(inp, oup: ptr byte, inl, oul: int, pubkey: PublicKey,
                    shmac: ptr byte = nil, shlen: int = 0): EciesStatus =
   ## Encrypt data with ECIES method to the given public key `pubkey`.
@@ -112,8 +134,32 @@ proc eciesEncrypt*(inp, oup: ptr byte, inl, oul: int, pubkey: PublicKey,
     return(EcdhError)
 
   material = kdf(secret)
+
+  when false:
+    # REVIEW: Please try to write the code in a way that's easy to review
+    # only by looking at the current line. For example, the zeroMem call
+    # below could have been written:
+    zeroMem(addr secret[0], sizeof(secret))
+
+    # or even better:
+    zeroArray(secret)
+
+    # where `zeroArray` is a template that does the right thing:
+    template zeroArray(a: array) = zeroMem(unsafeAddr a[0], sizeof(a))
+
+    # When constants are used, sometimes errors will slip through the
+    # cracks after copy/pasting code and it's harder to notice the problem
+    # in a code review.
+
   zeroMem(addr secret[0], sizeof(SharedSecret)) # clean shared secret
   copyMem(addr encKey[0], addr material[0], KeyLength div 2)
+
+  # REVIEW: The line below will introduce an array copy. Is this intentional?
+  # If you store the result MDigest value on the stack and use the `data` field
+  # in `ctx.init` below, there won't be copies. I've also noticed that you are
+  # trying to zero out the `macKey` variable at the end of the function, which
+  # I assume is done as a security measure. The temporary MDigest here will
+  # store the same bytes and won't be zeroed out.
   macKey = sha256.digest(material, KeyLength div 2).data
   zeroMem(addr material[0], KeyLength) # clean material
 
@@ -131,6 +177,10 @@ proc eciesEncrypt*(inp, oup: ptr byte, inl, oul: int, pubkey: PublicKey,
   if not isNil(shmac) and shlen > 0:
     ctx.update(shmac, uint(shlen))
   tag = ctx.finish().data
+
+  # REVIEW: If this is an important step after creating a HMAC, perhaps
+  # it could be provided as an alternative way to call `finish` or
+  # at least it could be a proc like `ctx.clear()`
   zeroMem(addr ctx, sizeof(HMAC[sha256])) # clean hmac context
   zeroMem(addr macKey[0], KeyLength) # clean macKey
   copyMem(addr output[eciesDataPos() + inl], addr tag[0], sha256.sizeDigest)
@@ -177,6 +227,7 @@ proc eciesDecrypt*(inp, oup: ptr byte, inl, oul: int, seckey: PrivateKey,
   var material = kdf(secret)
   zeroMem(addr secret[0], sizeof(SharedSecret)) # clean shared secret
   copyMem(addr encKey[0], addr material[0], KeyLength div 2)
+  # REVIEW: unnecessary copy
   macKey = sha256.digest(material, KeyLength div 2).data
   zeroMem(addr material[0], KeyLength) # clean material
 

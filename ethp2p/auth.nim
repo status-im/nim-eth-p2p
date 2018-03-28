@@ -17,6 +17,9 @@ import hexdump
 
 const
   SupportedRlpxVersion* = 4
+  # REVIEW: If these messages have fixed lenghts, they will be
+  # better described by an object type (see my similar comments
+  # in the ecies module.
   PlainAuthMessageLength* = 194
   PlainAuthAckMessageLength* = 97
   AuthMessageLength* = 307
@@ -51,6 +54,9 @@ type
     responderNonce*: Nonce
 
   ConnectionSecret* = object
+    # REVIEW: it would be nice if Nimcrypto defines distinct or
+    # alias types such as `aes256.key` instead of having to spell
+    # out the full array type everywhere.
     aesKey*: array[aes256.sizeKey, byte]
     macKey*: array[KeyLength, byte]
     egressMac*: array[keccak256.sizeDigest, byte]
@@ -65,7 +71,7 @@ type
 
 proc sxor[T](a: var openarray[T], b: openarray[T]) =
   assert(len(a) == len(b))
-  for i in 0..(len(a) - 1):
+  for i in 0 ..< len(a):
     a[i] = a[i] xor b[i]
 
 proc empty[T](v: openarray[T]): bool =
