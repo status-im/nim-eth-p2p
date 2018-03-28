@@ -334,7 +334,7 @@ proc decodeAuthEip8Message*(h: var Handshake, msg: ptr byte,
     return(EciesError)
 
   try:
-    var reader = rlpFromBytes(initBytesRange(output))
+    var reader = rlpFromBytes(output.toRange())
     if not reader.isList() or reader.listLen() < 4:
       return(InvalidAuth)
     if reader.listElem(0).blobLen != SignatureLength:
@@ -351,10 +351,10 @@ proc decodeAuthEip8Message*(h: var Handshake, msg: ptr byte,
     var nonceBr = reader.listElem(2).toBytes()
     var versionBr = reader.listElem(3).toBytes()
 
-    if recoverPublicKey(addr output[pubkeyBr.ibegin], PublicKeyLength,
+    if recoverPublicKey(pubkeyBr.baseAddr, PublicKeyLength,
                         pubkey) != EccStatus.Success:
       return(InvalidPubKey)
-    copyMem(addr nonce[0], addr output[nonceBr.ibegin], KeyLength)
+    copyMem(addr nonce[0], nonceBr.baseAddr, KeyLength)
 
     if ecdhAgree(h.host.seckey, pubkey, secret) != EccStatus.Success:
       return(EcdhError)
@@ -362,14 +362,14 @@ proc decodeAuthEip8Message*(h: var Handshake, msg: ptr byte,
     var xornonce = nonce
     xornonce.sxor(secret)
 
-    if recoverSignatureKey(addr output[signatureBr.ibegin], SignatureLength,
+    if recoverSignatureKey(signatureBr.baseAddr, SignatureLength,
                            addr xornonce[0],
                            h.remoteEPubkey) != EccStatus.Success:
       return(SignatureError)
 
     h.initiatorNonce = nonce
     h.remoteHPubkey = pubkey
-    h.version = output[versionBr.ibegin]
+    h.version = cast[ptr byte](versionBr.baseAddr)[]
     result = Success
   except:
     return(RlpError)
@@ -394,7 +394,7 @@ proc decodeAuthAckEip8Message(h: var Handshake, msg: ptr byte,
     return(EciesError)
 
   try:
-    var reader = rlpFromBytes(initBytesRange(output))
+    var reader = rlpFromBytes(output.toRange())
     if not reader.isList() or reader.listLen() < 3:
       return(InvalidAck)
     if reader.listElem(0).blobLen != PublicKeyLength:
@@ -403,15 +403,15 @@ proc decodeAuthAckEip8Message(h: var Handshake, msg: ptr byte,
       return(InvalidAck)
     if reader.listElem(2).blobLen != 1:
       return(InvalidAck)
-    var pubkeyBr = reader.listElem(0).toBytes()
-    var nonceBr = reader.listElem(1).toBytes()
-    var versionBr = reader.listElem(2).toBytes()
+    let pubkeyBr = reader.listElem(0).toBytes()
+    let nonceBr = reader.listElem(1).toBytes()
+    let versionBr = reader.listElem(2).toBytes()
 
-    if recoverPublicKey(addr output[pubkeyBr.ibegin], PublicKeyLength,
+    if recoverPublicKey(pubkeyBr.baseAddr, PublicKeyLength,
                         h.remoteEPubkey) != EccStatus.Success:
       return(InvalidPubKey)
-    copyMem(addr h.responderNonce[0], addr output[nonceBr.ibegin], KeyLength)
-    h.version = output[versionBr.ibegin]
+    copyMem(addr h.responderNonce[0], nonceBr.baseAddr, KeyLength)
+    h.version = cast[ptr byte](versionBr.baseAddr)[]
     result = Success
   except:
     return(RlpError)
