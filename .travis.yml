@@ -15,8 +15,6 @@ before_script:
   - ./koch nimble
   - export PATH=$(pwd)/bin:$PATH
   - cd ..
-  - nimble install https://github.com/status-im/nim-rlp
-  - nimble install https://github.com/cheatfate/nimcrypto
-  - nimble install https://github.com/status-im/nim-secp256k1
 script:
-  - nimble tests
+  - nimble install -y
+  - nimble test
