@@ -816,7 +816,7 @@ when isMainModule:
       # the expected values.
       var taes = fromHex(stripSpaces(testE8Value("auth2ack2_aes_secret")))
       var tmac = fromHex(stripSpaces(testE8Value("auth2ack2_mac_secret")))
-      
+
       var csecInitiator: ConnectionSecret
       var csecResponder: ConnectionSecret
 
