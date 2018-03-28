@@ -1,0 +1,22 @@
+sudo: false
+language: c
+os:
+  - linux
+  - osx
+dist: trusty
+before_script:
+  - git clone https://github.com/nim-lang/Nim.git
+  - cd Nim
+  - git clone --depth 1 https://github.com/nim-lang/csources
+  - cd csources && sh build.sh
+  - cd ..
+  - bin/nim c koch
+  - ./koch boot -d:release
+  - ./koch nimble
+  - export PATH=$(pwd)/bin:$PATH
+  - cd ..
+  - nimble install https://github.com/status-im/nim-rlp
+  - nimble install https://github.com/cheatfate/nimcrypto >= 0.1.0
+  - nimble install https://github.com/status-im/nim-secp256k1
+script:
+  - nimble tests
