@@ -9,7 +9,7 @@
 
 import unittest
 import ethp2p/ecc, ethp2p/ecies
-import nimcrypto/utils, nimcrypto/sha2, nimcrypto/hmac
+import nimcrypto/utils, nimcrypto/sha2, nimcrypto/hmac, nimcrypto/rijndael
 
 proc compare[A, B](x: openarray[A], y: openarray[B], s: int = 0): bool =
   result = true
@@ -20,7 +20,19 @@ proc compare[A, B](x: openarray[A], y: openarray[B], s: int = 0): bool =
       result = false
       break
 
+template offsetOf(a, b): int =
+  cast[int](cast[uint](unsafeAddr b) - cast[uint](unsafeAddr a))
+
 suite "ECIES test suite":
+  test "ECIES structures alignment":
+    var header: EciesHeader
+    check:
+      offsetOf(header, header.version) == 0
+      offsetOf(header, header.pubkey) == 1
+      offsetOf(header, header.iv) == 1 + 64
+      offsetOf(header, header.data) == 1 + 64 + aes128.sizeBlock
+      sizeof(header) == 1 + 64 + aes128.sizeBlock + 1
+
   test "KDF test vectors":
     # KDF test
     # Copied from https://github.com/ethereum/pydevp2p/blob/develop/devp2p/tests/test_ecies.py#L53

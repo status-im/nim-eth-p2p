@@ -26,6 +26,18 @@ const
   AuthAckMessageLength* = 210
 
 type
+  PlainAuthMessage* = object {.packed.}
+    signature: RawSignature
+    keyhash: array[keccak256.sizeDigest, byte]
+    pubkey: PublicKey
+    nonce: array[keccak256.sizeDigest, byte]
+    flag: byte
+
+  PlainAuthAckMessage* = object {.packed.}
+    pubkey: PublicKey
+    nonce: array[keccak256.sizeDigest, byte]
+    flag: byte
+
   HandshakeFlag* = enum
     Initiator,      ## `Handshake` owner is connection initiator
     Responder,      ## `Handshake` owner is connection responder
@@ -62,8 +74,8 @@ type
     egressMac*: array[keccak256.sizeDigest, byte]
     ingressMac*: array[keccak256.sizeDigest, byte]
 
-  PlainAuthMessage* = array[PlainAuthMessageLength, byte]
-  PlainAuthAckMessage* = array[PlainAuthAckMessageLength, byte]
+  # PlainAuthMessage* = array[PlainAuthMessageLength, byte]
+  # PlainAuthAckMessage* = array[PlainAuthAckMessageLength, byte]
   AuthMessage* = array[AuthMessageLength, byte]
   AuthAckMessage* = array[AuthAckMessageLength, byte]
 
@@ -95,27 +107,23 @@ proc newHandshake*(flags: set[HandshakeFlag] = {Initiator}): Handshake =
   result.ephemeral = newKeyPair()
 
   if Initiator in flags:
-    p = addr result.initiatorNonce[0]
+    if randomBytes(result.initiatorNonce) != len(result.initiatorNonce):
+      raise newException(AuthException, "Could not obtain random data!")
   else:
-    p = addr result.responderNonce[0]
+    if randomBytes(result.responderNonce) != len(result.responderNonce):
+      raise newException(AuthException, "Could not obtain random data!")
 
-  if randomBytes(p, KeyLength) != KeyLength:
-    raise newException(AuthException, "Could not obtain random data!")
-
-proc authMessage*(h: var Handshake,
+proc authMessagePreEIP8*(h: var Handshake,
                   pubkey: PublicKey,
-                  output: var PlainAuthMessage): AuthStatus =
+                  output: var PlainAuthMessage,
+                  flag: int = 0): AuthStatus =
   ## Create plain preEIP8 authentication message.
   var secret: SharedSecret
   var signature: Signature
-  var flag = byte(0x00)
+  var flagb = byte(flag)
 
   if ecdhAgree(h.host.seckey, pubkey, secret) != EccStatus.Success:
     return(EcdhError)
-
-  if h.initiatorNonce.empty():
-    if randomBytes(addr h.initiatorNonce[0], KeyLength) != KeyLength:
-      return(RandomError)
 
   var xornonce = h.initiatorNonce
   xornonce.sxor(secret)
@@ -123,22 +131,20 @@ proc authMessage*(h: var Handshake,
   if signMessage(h.ephemeral.seckey, xornonce, signature) != EccStatus.Success:
     return(SignatureError)
 
-  copyMem(addr h.remoteHPubkey, unsafeAddr pubkey, sizeof(PublicKey))
+  h.remoteHPubkey = pubkey
+  
+  output.signature = signature.getRaw()
+  output.keyhash = keccak256.digest(h.ephemeral.pubkey.getRaw().data).data
+  output.pubkey = cast[PublicKey](h.host.pubkey.getRaw().data)
+  output.nonce = h.initiatorNonce
+  output.flag = flagb
 
-  move(output, signature.getRaw().data, 0, 64)
-  move(output, keccak256.digest(h.ephemeral.pubkey.getRaw().data).data, 65, 96)
-  move(output, h.host.pubkey.getRaw().data, 97, 160)
-  move(output, h.initiatorNonce, 161, 192)
-  output[193] = flag
-
-proc authAckMessage*(h: var Handshake,
-                     output: var PlainAuthAckMessage): AuthStatus =
-  if EIP8 in h.flags:
-    discard
-  else:
-    move(output, h.ephemeral.pubkey.getRaw().data, 0, 63)
-    move(output, h.responderNonce, 64, 95)
-    output[96] = byte(0x00)
+proc authAckMessagePreEIP8*(h: var Handshake,
+                            output: var PlainAuthAckMessage,
+                            flag: int = 0): AuthStatus =
+  output.pubkey = cast[PublicKey](h.ephemeral.pubkey.getRaw().data)
+  output.nonce = h.responderNonce
+  output.flag = byte(flag)
 
 proc encryptAuthMessage*(input: ptr byte, inputlen: int,
                          output: ptr byte, outputlen: int,

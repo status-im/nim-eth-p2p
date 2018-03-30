@@ -16,7 +16,6 @@ const
   PublicKeyLength* = 64
   SignatureLength* = 65
 
-
 type
   EccContext* = ref object of RootRef
     context*: ptr secp256k1_context
@@ -264,7 +263,7 @@ proc newPrivateKey*(): PrivateKey =
   ## Generates new secret key.
   let ctx = getSecpContext()
   while true:
-    if randomBytes(addr result[0], KeyLength) == KeyLength:
+    if randomBytes(result) == KeyLength:
       if secp256k1_ec_seckey_verify(ctx, cast[ptr cuchar](addr result[0])) == 1:
         break
 

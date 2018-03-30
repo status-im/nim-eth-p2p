@@ -166,7 +166,7 @@ proc eciesDecrypt*(input: openarray[byte],
     ctx: HMAC[sha256]
     secret: SharedSecret
 
-  if len(input) == 0:
+  if len(input) <= 0:
     return(IncompleteError)
 
   var header = cast[ptr EciesHeader](unsafeAddr input[0])
@@ -188,7 +188,6 @@ proc eciesDecrypt*(input: openarray[byte],
   burnMem(material)
 
   let macsize = eciesMacLength(len(input) - eciesOverheadLength())
-  let datsize = eciesDecryptedLength(len(input))
   ctx.init(macKey.data)
   burnMem(macKey)
   ctx.update(toOpenArray(input, eciesIvPos(), eciesIvPos() + macsize - 1))
@@ -201,6 +200,7 @@ proc eciesDecrypt*(input: openarray[byte],
                   sha256.sizeDigest):
     return(IncorrectTag)
 
+  let datsize = eciesDecryptedLength(len(input))
   cipher.init(encKey, header.iv)
   burnMem(encKey)
   cipher.decrypt(toOpenArray(input, eciesDataPos(),
