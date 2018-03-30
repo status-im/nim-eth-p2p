@@ -26,22 +26,22 @@ type
     IncorrectKey,   ## Recovered public key is invalid
     IncorrectTag    ## ECIES tag verification failed
 
-when false:
-  # REVIEW(zah):
-  # Why do we work with arrays and known fixed offsets (such sa eciesIvPos)
-  # instead of defining object types with named fields:
-  type
-    EciesPrefix = object
-      leadingByte: byte
-      pubKey: PublicKey
-      iv: array[aes128.sizeBlock]
+# when false:
+#   # REVIEW(zah):
+#   # Why do we work with arrays and known fixed offsets (such sa eciesIvPos)
+#   # instead of defining object types with named fields:
+#   type
+#     EciesPrefix = object
+#       leadingByte: byte
+#       pubKey: PublicKey
+#       iv: array[aes128.sizeBlock]
 
-  # You can then write to these fields by doing:
-  var eciesPrefix = cast[ptr EciesPrefix](addr array[0])
-  eciesPrefix.pubKey = ...
-  eciesPrefix.iv = ...
+#   # You can then write to these fields by doing:
+#   var eciesPrefix = cast[ptr EciesPrefix](addr array[0])
+#   eciesPrefix.pubKey = ...
+#   eciesPrefix.iv = ...
 
-  # This will make the code slightly easier to read and review for correctness
+#   # This will make the code slightly easier to read and review for correctness
 
 template eciesOverheadLength*(): int =
   ## Return data overhead size for ECIES encrypted message
