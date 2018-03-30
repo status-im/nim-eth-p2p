@@ -15,3 +15,5 @@ task test, "Runs the test suite":
   runTest "testecc"
   runTest "testecies"
   runTest "testauth"
+
+  runTest("tdiscovery", "cpp")
