@@ -7,7 +7,13 @@ description   = "Ethereum P2P library"
 license       = "MIT"
 skipDirs      = @["tests", "Nim"]
 
-requires "nim > 0.18.0", "https://github.com/status-im/nim-rlp >= 1.0.1", "https://github.com/cheatfate/nimcrypto >= 0.1.0", "https://github.com/status-im/nim-secp256k1 >= 0.1.0"
+requires "nim > 0.18.0",
+          "rlp >= 1.0.1",
+          "nimcrypto >= 0.1.0",
+          "secp256k1 >= 0.1.0",
+          "eth_keys",
+          "ranges",
+          "ttmath"
 
 proc runTest(name: string, lang = "c") = exec "nim " & lang & " -r tests/" & name
 
