@@ -39,6 +39,6 @@ build_script:
   - cd C:\projects\nim-eth-p2p
   - nimble install -y
 test_script:
-  - nimble tests
+  - nimble test
 
 deploy: off
