@@ -30,7 +30,7 @@ install:
   - git fetch statusim
   - git config --global user.email "you@example.com"
   - git config --global user.name "Your Name"
-  - for /f "tokens=*" %G IN ('git branch -a --list ^"statusim/status-autopatch-*^"') DO (git merge %G)
+  - for /f "tokens=*" %%G IN ('git branch -a --list ^"statusim/status-autopatch-*^"') DO (git merge %%G)
   - git clone --depth 1 https://github.com/nim-lang/csources
   - cd csources
   - IF "%PLATFORM%" == "x64" ( build64.bat ) else ( build.bat )
