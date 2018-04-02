@@ -250,7 +250,7 @@ proc ackMessageEIP8(h: var Handshake,
   var wosize = pencsize + int(padsize)
   let fullsize = wosize + 2
   if int(padsize) > 0:
-    if randomBytes(toa(buffer, PlainAuthMessageEIP8Length,
+    if randomBytes(toa(buffer, PlainAckMessageEIP8Length,
                    int(padsize))) != int(padsize):
       return(RandomError)
   copyMem(addr buffer[0], payload.baseAddr, len(payload))
