@@ -23,11 +23,12 @@ install:
   - IF not exist "%MINGW_ARCHIVE%" appveyor DownloadFile "%MINGW_URL%" -FileName "%MINGW_ARCHIVE%"
   - 7z x -y "%MINGW_ARCHIVE%" > nul
   - SET PATH=%CD%\%MINGW_DIR%\bin;%CD%\Nim\bin;%PATH%
+  - git clone https://github.com/nim-lang/Nim.git
   - git remote add statusim https://github.com/status-im/Nim.git
   - git fetch statusim
   - git config --global user.email "you@example.com"
   - git config --global user.name "Your Name"
-  - for /f "tokens=*" %%G IN ('git branch -a --list ^"statusim/status-autopatch-*^"') DO (git merge %%G)
+  - for /f "tokens=*" %G IN ('git branch -a --list ^"statusim/status-autopatch-*^"') DO (git merge %G)
   - cd %CD%\Nim
   - git clone --depth 1 https://github.com/nim-lang/csources
   - cd csources
