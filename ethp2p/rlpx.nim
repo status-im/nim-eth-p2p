@@ -408,6 +408,7 @@ rlpxProtocol("p2p", 0):
     discard
 
 proc rlpxConnect*(keys: KeyPair, address: Address): Future[Peer] {.async.} =
+  # TODO: Make sure to close the socket in case of exception
   result.socket = newAsyncSocket()
   await result.socket.connect($address.ip, address.tcpPort)
 
