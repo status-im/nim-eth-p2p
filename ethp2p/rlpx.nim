@@ -407,37 +407,46 @@ rlpxProtocol("p2p", 0):
   proc pong(peer: Peer) =
     discard
 
-proc rlpxConnect*(keys: KeyPair, address: Address): Future[Peer] {.async.} =
+proc rlpxConnect*(myKeys: KeyPair, remoteKey: PublicKey,
+                  address: Address): Future[Peer] {.async.} =
   # TODO: Make sure to close the socket in case of exception
   result.socket = newAsyncSocket()
   await result.socket.connect($address.ip, address.tcpPort)
 
-  var initiator = newHandshake({Initiator})
-  initiator.host.seckey = keys.privKey
-  initiator.host.pubkey = keys.pubKey
-
-  var authPlain: PlainAuthMessage
-  var authCiphertext: AuthMessage
+  const encryptionEnabled = true
 
   template check(body: untyped) =
     let c = body
     if c != AuthStatus.Success:
       raise newException(Exception, "Error: " & $c)
 
-  check authMessage(initiator, keys.pubKey, authPlain)
-  check encryptAuthMessage(authPlain, authCiphertext, keys.pubKey)
-  await result.socket.send(addr authCiphertext[0], sizeof(authCiphertext))
+  template `^`(arr): auto =
+    # passes a stack array with a matching `arrLen`
+    # variable as an open array
+    arr.toOpenArray(0, `arr Len` - 1)
 
-  var authAck: AuthAckMessage
-  let receivedBytes = await result.socket.recvInto(addr authAck, sizeof(authAck))
+  var handshake = newHandshake({Initiator})
+  handshake.host.seckey = myKeys.privKey
+  handshake.host.pubkey = myKeys.pubKey
 
-  if receivedBytes != sizeof(AuthAckMessage):
+  var authMsg: array[AuthMessageMaxEIP8, byte]
+  var authMsgLen = 0
+  check authMessage(handshake, remoteKey, authMsg, authMsgLen,
+                    encrypt = encryptionEnabled)
+
+  await result.socket.send(addr authMsg[0], authMsgLen)
+
+  var ackMsg: array[AckMessageMaxEIP8, byte]
+  let ackMsgLen = handshake.ackSize(encrypt = encryptionEnabled)
+  let receivedBytes = await result.socket.recvInto(addr ackMsg, ackMsgLen)
+
+  if receivedBytes != ackMsgLen:
     # XXX: this handling is not perfect, we should probably retry until the
     # correct number of bytes are read!
     raise newException(MalformedMessageError, "AuthAck message has incorrect size")
 
-  check initiator.decodeAckMessage(authAck)
-  check initiator.getSecrets(authCiphertext, authAck, result.sessionSecrets)
+  check handshake.decodeAckMessage(^ackMsg)
+  check handshake.getSecrets(^authMsg, ^ackMsg, result.sessionSecrets)
 
   var
     # XXX: TODO

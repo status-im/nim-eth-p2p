@@ -19,15 +19,15 @@ const
   PlainAuthMessageV4Length* = 194
   AuthMessageV4Length* = 307
   PlainAuthMessageEIP8Length = 169
-  PlainAuthMessageMaxEIP8 = PlainAuthMessageEIP8Length + 255
+  PlainAuthMessageMaxEIP8* = PlainAuthMessageEIP8Length + 255
   AuthMessageEIP8Length* = 282 + 2
   AuthMessageMaxEIP8* = AuthMessageEIP8Length + 255
   PlainAckMessageV4Length* = 97
   AckMessageV4Length* = 210
-  PlainAckMessageEIP8Length = 102
-  PlainAckMessageMaxEIP8 = PlainAckMessageEIP8Length + 255
-  AckMessageEIP8Length = 215 + 2
-  AckMessageMaxEIP8 = AckMessageEIP8Length + 255
+  PlainAckMessageEIP8Length* = 102
+  PlainAckMessageMaxEIP8* = PlainAckMessageEIP8Length + 255
+  AckMessageEIP8Length* = 215 + 2
+  AckMessageMaxEIP8* = AckMessageEIP8Length + 255
 
 type
   AuthMessageV4* = object {.packed.}
