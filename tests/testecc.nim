@@ -9,7 +9,8 @@
 
 import unittest
 import ethp2p/ecc
-import nimcrypto/hash, nimcrypto/keccak, nimcrypto/utils
+import nimcrypto/[hash, keccak, utils, sysrand]
+import eth_keys
 
 proc compare(x: openarray[byte], y: openarray[byte]): bool =
   result = len(x) == len(y)
@@ -53,7 +54,7 @@ suite "ECC/ECDSA/ECDHE tests suite":
     var expectm = """
       8ac7e464348b85d9fdfc0a81f2fdc0bbbb8ee5fb3840de6ed60ad9372e718977"""
     var secret: array[KeyLength, byte]
-    var s = keccak256.digest("ecdhAgree").data
+    var s = initPrivateKey(keccak256.digest("ecdhAgree").data)
     var p = s.getPublicKey()
     let expect = fromHex(stripSpaces(expectm))
     check:
@@ -91,7 +92,7 @@ suite "ECC/ECDSA/ECDHE tests suite":
     var check2 = fromHex(stripSpaces(pubkey))
     var sig: Signature
     var key: PublicKey
-    var s = keccak256.digest("sec").data
+    var s = initPrivateKey(keccak256.digest("sec").data)
     var m = keccak256.digest("msg").data
     check signMessage(s, m, sig) == Success
     var sersig = sig.getRaw().data
@@ -106,7 +107,8 @@ suite "ECC/ECDSA/ECDHE tests suite":
     var rkey: PublicKey
     var sig: Signature
     for i in 1..100:
-      var m = newPrivateKey()
+      var m: array[64, byte]
+      assert randomBytes(addr m[0], sizeof(m)) == sizeof(m)
       var s = newPrivateKey()
       var key = s.getPublicKey()
       check signMessage(s, m, sig) == Success

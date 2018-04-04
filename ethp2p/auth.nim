@@ -33,12 +33,12 @@ type
   AuthMessageV4* = object {.packed.}
     signature: RawSignature
     keyhash: array[keccak256.sizeDigest, byte]
-    pubkey: PublicKey
+    pubkey: array[PublicKeyLength, byte]
     nonce: array[keccak256.sizeDigest, byte]
     flag: byte
 
   AckMessageV4* = object {.packed.}
-    pubkey: PublicKey
+    pubkey: array[PublicKeyLength, byte]
     nonce: array[keccak256.sizeDigest, byte]
     flag: byte
 
@@ -124,7 +124,7 @@ proc authMessagePreEIP8(h: var Handshake,
   h.remoteHPubkey = pubkey
   header.signature = signature.getRaw()
   header.keyhash = keccak256.digest(h.ephemeral.pubkey.getRaw().data).data
-  header.pubkey = cast[PublicKey](h.host.pubkey.getRaw().data)
+  header.pubkey = h.host.pubkey.getRaw().data
   header.nonce = h.initiatorNonce
   header.flag = flagb
   if encrypt:
@@ -208,7 +208,7 @@ proc ackMessagePreEIP8(h: var Handshake,
   var buffer: array[PlainAckMessageV4Length, byte]
   outlen = 0
   var header = cast[ptr AckMessageV4](addr buffer[0])
-  header.pubkey = cast[PublicKey](h.ephemeral.pubkey.getRaw().data)
+  header.pubkey = h.ephemeral.pubkey.getRaw().data
   header.nonce = h.responderNonce
   header.flag = byte(flag)
   if encrypt:
@@ -316,7 +316,7 @@ proc decodeAuthMessageV4(h: var Handshake, m: openarray[byte]): AuthStatus =
   if eciesDecrypt(m, buffer, h.host.seckey) != EciesStatus.Success:
     return(EciesError)
   var header = cast[ptr AuthMessageV4](addr buffer[0])
-  if recoverPublicKey(header.pubkey.data, pubkey) != EccStatus.Success:
+  if recoverPublicKey(header.pubkey, pubkey) != EccStatus.Success:
     return(InvalidPubKey)
   if ecdhAgree(h.host.seckey, pubkey, secret) != EccStatus.Success:
     return(EcdhError)
@@ -419,7 +419,7 @@ proc decodeAckMessageV4(h: var Handshake, m: openarray[byte]): AuthStatus =
   if eciesDecrypt(m, buffer, h.host.seckey) != EciesStatus.Success:
     return(EciesError)
   var header = cast[ptr AckMessageV4](addr buffer[0])
-  if recoverPublicKey(header.pubkey.data, h.remoteEPubkey) != EccStatus.Success:
+  if recoverPublicKey(header.pubkey, h.remoteEPubkey) != EccStatus.Success:
     return(InvalidPubKey)
   h.responderNonce = header.nonce
   result = Success

@@ -9,7 +9,9 @@
 
 ## This module implements `libsecp256k1` ECC/ECDH functions
 
-import secp256k1, hexdump, nimcrypto/sysrand, nimcrypto/utils
+import secp256k1, hexdump, nimcrypto/sysrand, nimcrypto/utils, eth_keys
+
+export PublicKey, PrivateKey, Signature
 
 const
   KeyLength* = 32
@@ -24,12 +26,6 @@ type
   EccStatus* = enum
     Success,  ## Operation was successful
     Error     ## Operation failed
-
-  PublicKey* = secp256k1_pubkey
-    ## Representation of public key
-
-  PrivateKey* = array[KeyLength, byte]
-    ## Representation of secret key
 
   SharedSecret* = array[KeyLength, byte]
     ## Representation of ECDH shared secret
@@ -46,9 +42,6 @@ type
     ## Representation of private/public keys pair
     seckey*: PrivateKey
     pubkey*: PublicKey
-
-  Signature* = secp256k1_ecdsa_recoverable_signature
-    ## Representation of signature
 
   RawSignature* = object
     ## Representation of serialized signature
@@ -114,7 +107,8 @@ proc getRaw*(pubkey: PublicKey): RawPublickey =
   var length = csize(sizeof(RawPublickey))
   let ctx = getSecpContext()
   if secp256k1_ec_pubkey_serialize(ctx, cast[ptr cuchar](addr result),
-                                   addr length, unsafeAddr pubkey,
+                                   addr length,
+                                   cast[ptr secp256k1_pubkey](unsafeAddr pubkey),
                                    SECP256K1_EC_UNCOMPRESSED) != 1:
     raiseSecp256k1Error()
   if length != 65:
@@ -127,7 +121,8 @@ proc getRaw*(s: Signature): RawSignature =
   let ctx = getSecpContext()
   var recid = cint(0)
   if secp256k1_ecdsa_recoverable_signature_serialize_compact(
-    ctx, cast[ptr cuchar](unsafeAddr result), addr recid, unsafeAddr s) != 1:
+      ctx, cast[ptr cuchar](unsafeAddr result), addr recid,
+      cast[ptr secp256k1_ecdsa_recoverable_signature](unsafeAddr s)) != 1:
     raiseSecp256k1Error()
   result.data[64] = uint8(recid)
 
@@ -136,10 +131,11 @@ proc signMessage*(seckey: PrivateKey, data: ptr byte, length: int,
   ## Sign message pointed by `data` with size `length` and save signature to
   ## `sig`.
   let ctx = getSecpContext()
-  if secp256k1_ecdsa_sign_recoverable(ctx, addr sig,
-                                      cast[ptr cuchar](data),
-                                      cast[ptr cuchar](unsafeAddr seckey[0]),
-                                      nil, nil) != 1:
+  if secp256k1_ecdsa_sign_recoverable(ctx,
+                      cast[ptr secp256k1_ecdsa_recoverable_signature](addr sig),
+                      cast[ptr cuchar](data),
+                      cast[ptr cuchar](unsafeAddr seckey),
+                      nil, nil) != 1:
     return(Error)
   return(Success)
 
@@ -173,8 +169,8 @@ proc recoverSignatureKey*(data: ptr byte, length: int, message: ptr byte,
                                                            recid) != 1:
       return(Error)
 
-    if secp256k1_ecdsa_recover(ctx, addr pubkey, addr s,
-                               cast[ptr cuchar](message)) != 1:
+    if secp256k1_ecdsa_recover(ctx, cast[ptr secp256k1_pubkey](addr pubkey),
+                              addr s, cast[ptr cuchar](message)) != 1:
       setErrorMsg("Message signature verification failed!")
       return(Error)
     return(Success)
@@ -211,7 +207,7 @@ proc ecdhAgree*(seckey: PrivateKey, pubkey: PublicKey,
   var res: array[KeyLength + 1, byte]
   let ctx = getSecpContext()
   if secp256k1_ecdh_raw(ctx, cast[ptr cuchar](addr res),
-                        unsafeAddr pubkey,
+                        cast[ptr secp256k1_pubkey](unsafeAddr pubkey),
                         cast[ptr cuchar](unsafeAddr seckey)) != 1:
     return(Error)
   copyMem(addr secret[0], addr res[1], KeyLength)
@@ -219,11 +215,7 @@ proc ecdhAgree*(seckey: PrivateKey, pubkey: PublicKey,
 
 proc getPublicKey*(seckey: PrivateKey): PublicKey =
   ## Return public key for private key `seckey`.
-  let ctx = getSecpContext()
-  if secp256k1_ec_pubkey_create(ctx, addr result,
-                                cast[ptr cuchar](unsafeAddr seckey[0])) != 1:
-    raiseSecp256k1Error()
-
+  seckey.public_key
 
 proc recoverPublicKey*(data: ptr byte, length: int,
                        pubkey: var PublicKey): EccStatus =
@@ -236,7 +228,7 @@ proc recoverPublicKey*(data: ptr byte, length: int,
   var rawkey: RawPublickey
   rawkey.header = 0x04 # mark key with COMPRESSED flag
   copyMem(addr rawkey.data[0], data, len(rawkey.data))
-  if secp256k1_ec_pubkey_parse(ctx, addr pubkey,
+  if secp256k1_ec_pubkey_parse(ctx, cast[ptr secp256k1_pubkey](addr pubkey),
                                cast[ptr cuchar](addr rawkey),
                                sizeof(RawPublickey)) != 1:
     return(Error)
@@ -263,8 +255,8 @@ proc newPrivateKey*(): PrivateKey =
   ## Generates new secret key.
   let ctx = getSecpContext()
   while true:
-    if randomBytes(result) == KeyLength:
-      if secp256k1_ec_seckey_verify(ctx, cast[ptr cuchar](addr result[0])) == 1:
+    if randomBytes(addr result, sizeof(result)) == sizeof(result):
+      if secp256k1_ec_seckey_verify(ctx, cast[ptr cuchar](addr result)) == 1:
         break
 
 proc newKeyPair*(): KeyPair =
@@ -278,8 +270,8 @@ proc getPrivateKey*(hexstr: string): PrivateKey =
   var o = fromHex(stripSpaces(hexstr))
   if len(o) < KeyLength:
     raise newException(EccException, "Invalid private key!")
-  copyMem(addr result[0], unsafeAddr o[0], KeyLength)
-  if secp256k1_ec_seckey_verify(ctx, cast[ptr cuchar](addr result[0])) != 1:
+  copyMem(addr result, unsafeAddr o[0], KeyLength)
+  if secp256k1_ec_seckey_verify(ctx, cast[ptr cuchar](addr result)) != 1:
     raise newException(EccException, "Invalid private key!")
 
 proc getPublicKey*(hexstr: string): PublicKey =
@@ -299,7 +291,7 @@ proc dump*(s: openarray[byte], c: string = ""): string =
 proc dump*(s: PublicKey, c: string = ""): string =
   ## Return hexadecimal dump of public key `s`.
   result = if len(c) > 0: c & "=>\n" else: ""
-  result &= dumpHex(unsafeAddr s.data[0], sizeof(secp256k1_pubkey))
+  result &= dumpHex(unsafeAddr s, sizeof(s))
 
 proc dump*(s: RawSignature, c: string = ""): string =
   ## Return hexadecimal dump of serialized signature `s`.
