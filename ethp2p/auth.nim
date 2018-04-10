@@ -10,7 +10,7 @@
 ## This module implements Ethereum authentication
 
 import endians
-import ecc, ecies, rlp
+import eth_keys, ecies, rlp
 import nimcrypto/sysrand, nimcrypto/hash, nimcrypto/utils, nimcrypto/hmac
 import nimcrypto/rijndael, nimcrypto/keccak, nimcrypto/sha2
 
@@ -30,15 +30,17 @@ const
   AckMessageMaxEIP8* = AckMessageEIP8Length + 255
 
 type
+  Nonce* = array[KeyLength, byte]
+
   AuthMessageV4* = object {.packed.}
-    signature: RawSignature
+    signature: array[RawSignatureSize, byte]
     keyhash: array[keccak256.sizeDigest, byte]
     pubkey: PublicKey
     nonce: array[keccak256.sizeDigest, byte]
     flag: byte
 
   AckMessageV4* = object {.packed.}
-    pubkey: PublicKey
+    pubkey: array[RawPublicKeySize, byte]
     nonce: array[keccak256.sizeDigest, byte]
     flag: byte
 
@@ -115,16 +117,17 @@ proc authMessagePreEIP8(h: var Handshake,
   outlen = 0
   flagb = byte(flag)
   header = cast[ptr AuthMessageV4](addr buffer[0])
-  if ecdhAgree(h.host.seckey, pubkey, secret) != EccStatus.Success:
+  if ecdhAgree(h.host.seckey, pubkey, secret) != EthKeysStatus.Success:
     return(EcdhError)
   var xornonce = h.initiatorNonce
-  xornonce.sxor(secret)
-  if signMessage(h.ephemeral.seckey, xornonce, signature) != EccStatus.Success:
+  xornonce.sxor(secret.data)
+  if signRawMessage(xornonce, h.ephemeral.seckey,
+                    signature) != EthKeysStatus.Success:
     return(SignatureError)
   h.remoteHPubkey = pubkey
   header.signature = signature.getRaw()
-  header.keyhash = keccak256.digest(h.ephemeral.pubkey.getRaw().data).data
-  header.pubkey = cast[PublicKey](h.host.pubkey.getRaw().data)
+  header.keyhash = keccak256.digest(h.ephemeral.pubkey.getRaw()).data
+  header.pubkey = cast[PublicKey](h.host.pubkey.getRaw())
   header.nonce = h.initiatorNonce
   header.flag = flagb
   if encrypt:
@@ -156,15 +159,16 @@ proc authMessageEIP8(h: var Handshake,
 
   assert(EIP8 in h.flags)
   outlen = 0
-  if ecdhAgree(h.host.seckey, pubkey, secret) != EccStatus.Success:
+  if ecdhAgree(h.host.seckey, pubkey, secret) != EthKeysStatus.Success:
     return(EcdhError)
   var xornonce = h.initiatorNonce
-  xornonce.sxor(secret)
-  if signMessage(h.ephemeral.seckey, xornonce, signature) != EccStatus.Success:
+  xornonce.sxor(secret.data)
+  if signRawMessage(xornonce, h.ephemeral.seckey,
+                    signature) != EthKeysStatus.Success:
     return(SignatureError)
   h.remoteHPubkey = pubkey
-  var payload = rlp.encodeList(signature.getRaw().data,
-                               h.host.pubkey.getRaw().data,
+  var payload = rlp.encodeList(signature.getRaw(),
+                               h.host.pubkey.getRaw(),
                                h.initiatorNonce,
                                [byte(h.version)])
   assert(len(payload) == PlainAuthMessageEIP8Length)
@@ -208,7 +212,7 @@ proc ackMessagePreEIP8(h: var Handshake,
   var buffer: array[PlainAckMessageV4Length, byte]
   outlen = 0
   var header = cast[ptr AckMessageV4](addr buffer[0])
-  header.pubkey = cast[PublicKey](h.ephemeral.pubkey.getRaw().data)
+  header.pubkey = h.ephemeral.pubkey.getRaw()
   header.nonce = h.responderNonce
   header.flag = byte(flag)
   if encrypt:
@@ -234,7 +238,7 @@ proc ackMessageEIP8(h: var Handshake,
     buffer: array[PlainAckMessageMaxEIP8, byte]
     padsize: byte
   assert(EIP8 in h.flags)
-  var payload = rlp.encodeList(h.ephemeral.pubkey.getRaw().data,
+  var payload = rlp.encodeList(h.ephemeral.pubkey.getRaw(),
                                h.responderNonce,
                                [byte(h.version)])
   assert(len(payload) == PlainAckMessageEIP8Length)
@@ -316,14 +320,14 @@ proc decodeAuthMessageV4(h: var Handshake, m: openarray[byte]): AuthStatus =
   if eciesDecrypt(m, buffer, h.host.seckey) != EciesStatus.Success:
     return(EciesError)
   var header = cast[ptr AuthMessageV4](addr buffer[0])
-  if recoverPublicKey(header.pubkey.data, pubkey) != EccStatus.Success:
+  if recoverPublicKey(header.pubkey.data, pubkey) != EthKeysStatus.Success:
     return(InvalidPubKey)
-  if ecdhAgree(h.host.seckey, pubkey, secret) != EccStatus.Success:
+  if ecdhAgree(h.host.seckey, pubkey, secret) != EthKeysStatus.Success:
     return(EcdhError)
   var xornonce = header.nonce
-  xornonce.sxor(secret)
-  if recoverSignatureKey(header.signature.data, xornonce,
-                         h.remoteEPubkey) != EccStatus.Success:
+  xornonce.sxor(secret.data)
+  if recoverSignatureKey(header.signature, xornonce,
+                         h.remoteEPubkey) != EthKeysStatus.Success:
     return(SignatureError)
   h.initiatorNonce = header.nonce
   h.remoteHPubkey = pubkey
@@ -347,9 +351,9 @@ proc decodeAuthMessageEip8(h: var Handshake, m: openarray[byte]): AuthStatus =
     var reader = rlpFromBytes(buffer.toRange())
     if not reader.isList() or reader.listLen() < 4:
       return(InvalidAuth)
-    if reader.listElem(0).blobLen != SignatureLength:
+    if reader.listElem(0).blobLen != RawSignatureSize:
       return(InvalidAuth)
-    if reader.listElem(1).blobLen != PublicKeyLength:
+    if reader.listElem(1).blobLen != RawPublicKeySize:
       return(InvalidAuth)
     if reader.listElem(2).blobLen != KeyLength:
       return(InvalidAuth)
@@ -359,17 +363,17 @@ proc decodeAuthMessageEip8(h: var Handshake, m: openarray[byte]): AuthStatus =
     var pubkeyBr = reader.listElem(1).toBytes()
     var nonceBr = reader.listElem(2).toBytes()
     var versionBr = reader.listElem(3).toBytes()
-    if recoverPublicKey(pubkeyBr.baseAddr, PublicKeyLength,
-                        pubkey) != EccStatus.Success:
+    if recoverPublicKey(pubkeyBr.toOpenArray(),
+                        pubkey) != EthKeysStatus.Success:
       return(InvalidPubKey)
     copyMem(addr nonce[0], nonceBr.baseAddr, KeyLength)
-    if ecdhAgree(h.host.seckey, pubkey, secret) != EccStatus.Success:
+    if ecdhAgree(h.host.seckey, pubkey, secret) != EthKeysStatus.Success:
       return(EcdhError)
     var xornonce = nonce
-    xornonce.sxor(secret)
-    if recoverSignatureKey(signatureBr.baseAddr, SignatureLength,
-                           addr xornonce[0],
-                           h.remoteEPubkey) != EccStatus.Success:
+    xornonce.sxor(secret.data)
+    if recoverSignatureKey(signatureBr.toOpenArray(),
+                           xornonce,
+                           h.remoteEPubkey) != EthKeysStatus.Success:
       return(SignatureError)
     h.initiatorNonce = nonce
     h.remoteHPubkey = pubkey
@@ -393,7 +397,7 @@ proc decodeAckMessageEip8*(h: var Handshake, m: openarray[byte]): AuthStatus =
     var reader = rlpFromBytes(buffer.toRange())
     if not reader.isList() or reader.listLen() < 3:
       return(InvalidAck)
-    if reader.listElem(0).blobLen != PublicKeyLength:
+    if reader.listElem(0).blobLen != RawPublicKeySize:
       return(InvalidAck)
     if reader.listElem(1).blobLen != KeyLength:
       return(InvalidAck)
@@ -402,8 +406,8 @@ proc decodeAckMessageEip8*(h: var Handshake, m: openarray[byte]): AuthStatus =
     let pubkeyBr = reader.listElem(0).toBytes()
     let nonceBr = reader.listElem(1).toBytes()
     let versionBr = reader.listElem(2).toBytes()
-    if recoverPublicKey(pubkeyBr.baseAddr, PublicKeyLength,
-                        h.remoteEPubkey) != EccStatus.Success:
+    if recoverPublicKey(pubkeyBr.toOpenArray(),
+                        h.remoteEPubkey) != EthKeysStatus.Success:
       return(InvalidPubKey)
     copyMem(addr h.responderNonce[0], nonceBr.baseAddr, KeyLength)
     h.version = cast[ptr byte](versionBr.baseAddr)[]
@@ -419,7 +423,7 @@ proc decodeAckMessageV4(h: var Handshake, m: openarray[byte]): AuthStatus =
   if eciesDecrypt(m, buffer, h.host.seckey) != EciesStatus.Success:
     return(EciesError)
   var header = cast[ptr AckMessageV4](addr buffer[0])
-  if recoverPublicKey(header.pubkey.data, h.remoteEPubkey) != EccStatus.Success:
+  if recoverPublicKey(header.pubkey, h.remoteEPubkey) != EthKeysStatus.Success:
     return(InvalidPubKey)
   h.responderNonce = header.nonce
   result = Success
@@ -476,7 +480,8 @@ proc getSecrets*(h: Handshake, authmsg: openarray[byte],
     xornonce: Nonce
 
   # ecdhe-secret = ecdh.agree(ephemeral-privkey, remote-ephemeral-pubk)
-  if ecdhAgree(h.ephemeral.seckey, h.remoteEPubkey, shsec) != EccStatus.Success:
+  if ecdhAgree(h.ephemeral.seckey, h.remoteEPubkey,
+    shsec) != EthKeysStatus.Success:
     return(EcdhError)
 
   # shared-secret = keccak(ecdhe-secret || keccak(nonce || initiator-nonce))
@@ -486,19 +491,19 @@ proc getSecrets*(h: Handshake, authmsg: openarray[byte],
   ctx1.update(h.initiatorNonce)
   mac1 = ctx1.finish()
   ctx1.clear()
-  ctx0.update(shsec)
+  ctx0.update(shsec.data)
   ctx0.update(mac1.data)
   mac1 = ctx0.finish()
 
   # aes-secret = keccak(ecdhe-secret || shared-secret)
   ctx0.init()
-  ctx0.update(shsec)
+  ctx0.update(shsec.data)
   ctx0.update(mac1.data)
   mac1 = ctx0.finish()
 
   # mac-secret = keccak(ecdhe-secret || aes-secret)
   ctx0.init()
-  ctx0.update(shsec)
+  ctx0.update(shsec.data)
   ctx0.update(mac1.data)
   secret.aesKey = mac1.data
   mac1 = ctx0.finish()

@@ -8,7 +8,7 @@
 #
 
 import unittest
-import ethp2p/ecc, ethp2p/ecies
+import eth_keys, ethp2p/ecies
 import nimcrypto/utils, nimcrypto/sha2, nimcrypto/hmac, nimcrypto/rijndael
 
 proc compare[A, B](x: openarray[A], y: openarray[B], s: int = 0): bool =
@@ -123,7 +123,7 @@ suite "ECIES test suite":
     ]
     var data: array[1024, byte]
     for i in 0..1:
-      var s = secretKeys[i].getPrivateKey()
+      var s = initPrivateKey(secretKeys[i])
       var cipher = fromHex(stripSpaces(cipherText[i]))
       var expect = fromHex(stripSpaces(expectText[i]))
       check:
@@ -164,7 +164,7 @@ suite "ECIES test suite":
     ]
     var data: array[1024, byte]
     for i in 0..3:
-      var s = secretKeys[i].getPrivateKey()
+      var s = initPrivateKey(secretKeys[i])
       var cipher = fromHex(stripSpaces(cipherData[i]))
       check:
         eciesDecrypt(cipher, data, s) == EciesStatus.Success

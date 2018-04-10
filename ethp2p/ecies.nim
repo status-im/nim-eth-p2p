@@ -9,7 +9,8 @@
 
 ## This module implements ECIES method encryption/decryption.
 
-import ecc, nimcrypto/sha2, nimcrypto/hash, nimcrypto/hmac
+import eth_keys
+import nimcrypto/sha2, nimcrypto/hash, nimcrypto/hmac
 import nimcrypto/rijndael, nimcrypto/utils, nimcrypto/sysrand
 import nimcrypto/bcmode, nimcrypto/utils
 
@@ -30,7 +31,7 @@ type
 
   EciesHeader* = object {.packed.}
     version*: byte
-    pubkey*: array[PublicKeyLength, byte]
+    pubkey*: array[RawPublicKeySize, byte]
     iv*: array[aes128.sizeBlock, byte]
     data*: byte
 
@@ -109,12 +110,11 @@ proc eciesEncrypt*(input: openarray[byte], output: var openarray[byte],
     return(RandomError)
 
   var ephemeral = newKeyPair()
-  var epub = ephemeral.pubkey.getRaw()
 
-  if ecdhAgree(ephemeral.seckey, pubkey, secret) != EccStatus.Success:
+  if ecdhAgree(ephemeral.seckey, pubkey, secret) != EthKeysStatus.Success:
     return(EcdhError)
 
-  material = kdf(secret)
+  material = kdf(secret.data)
   burnMem(secret)
 
   copyMem(addr encKey[0], addr material[0], aes128.sizeKey)
@@ -123,7 +123,7 @@ proc eciesEncrypt*(input: openarray[byte], output: var openarray[byte],
 
   var header = cast[ptr EciesHeader](addr output[0])
   header.version = 0x04
-  header.pubkey = epub.data
+  header.pubkey = ephemeral.pubkey.getRaw()
   header.iv = iv
 
   var so = eciesDataPos()
@@ -176,12 +176,12 @@ proc eciesDecrypt*(input: openarray[byte],
     return(IncompleteError)
   if len(input) - eciesOverheadLength() > len(output):
     return(BufferOverrun)
-  if recoverPublicKey(header.pubkey, pubkey) != EccStatus.Success:
+  if recoverPublicKey(header.pubkey, pubkey) != EthKeysStatus.Success:
     return(IncorrectKey)
-  if ecdhAgree(seckey, pubkey, secret) != EccStatus.Success:
+  if ecdhAgree(seckey, pubkey, secret) != EthKeysStatus.Success:
     return(EcdhError)
 
-  var material = kdf(secret)
+  var material = kdf(secret.data)
   burnMem(secret)
   copyMem(addr encKey[0], addr material[0], aes128.sizeKey)
   var macKey = sha256.digest(material, ostart = KeyLength div 2)

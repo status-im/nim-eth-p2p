@@ -18,7 +18,6 @@ requires "nim > 0.18.0",
 proc runTest(name: string, lang = "c") = exec "nim " & lang & " -r tests/" & name
 
 task test, "Runs the test suite":
-  runTest "testecc"
   runTest "testecies"
   runTest "testauth"
 
