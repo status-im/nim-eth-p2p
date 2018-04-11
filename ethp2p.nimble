@@ -13,7 +13,8 @@ requires "nim > 0.18.0",
           "secp256k1 >= 0.1.0",
           "eth_keys",
           "ranges",
-          "ttmath"
+          "ttmath",
+          "https://github.com/status-im/byteutils"
 
 proc runTest(name: string, lang = "c") = exec "nim " & lang & " -r tests/" & name
 

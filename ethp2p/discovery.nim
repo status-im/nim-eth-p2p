@@ -59,23 +59,21 @@ proc append*(w: var RlpWriter, p: Port) {.inline.} = w.append(p.int)
 
 proc append*(w: var RlpWriter, pk: PublicKey) {.inline.} =
   var bytes: array[64, byte]
-  pk.serialize(bytes)
+  pk.toRaw(bytes)
   w.append(toMemRange(bytes))
 
 proc append*(w: var RlpWriter, h: MDigest[256]) {.inline.} =
   w.append(toMemRange(h.data))
-
-proc toBytes(s: Signature): Bytes =
-  result = newSeq[byte](sizeof(s))
-  s.serialize(result)
 
 proc pack(cmdId: CommandId, payload: BytesRange, pk: PrivateKey): Bytes =
   ## Create and sign a UDP message to be sent to a remote node.
   ##
   ## See https://github.com/ethereum/devp2p/blob/master/rlpx.md#node-discovery for information on
   ## how UDP packets are structured.
+
+  # TODO: There is a lot of unneeded allocations here
   let encodedData = @[cmdId.byte] & payload.toSeq()
-  let signature = toBytes(pk.sign_msg(keccak256.digest(encodedData)))
+  let signature = @(pk.signMessage(encodedData).getRaw())
   let msgHash = keccak256.digest(signature & encodedData)
   result = @(msgHash.data) & signature & encodedData
 
@@ -83,10 +81,13 @@ proc validateMsgHash(msg: Bytes, msgHash: var MDigest[256]): bool =
   msgHash.data[0 .. ^1] = msg.toOpenArray(0, msgHash.data.high)
   result = msgHash == keccak256.digest(msg.toOpenArray(MAC_SIZE, msg.high))
 
-proc unpack(msg: Bytes): tuple[remotePubkey: PublicKey, cmdId: CommandId, payload: Bytes] =
+proc recoverMsgPublicKey(msg: Bytes, pk: var PublicKey): bool =
+  recoverSignatureKey(msg.toOpenArray(MAC_SIZE, MAC_SIZE + 65),
+    keccak256.digest(msg.toOpenArray(HEAD_SIZE, msg.high)).data,
+    pk) == EthKeysStatus.Success
+
+proc unpack(msg: Bytes): tuple[cmdId: CommandId, payload: Bytes] =
   result.cmdId = msg[HEAD_SIZE].CommandId
-  let signature = parseSignature(msg, MAC_SIZE)
-  result.remotePubkey = recover_pubkey_from_msg(keccak256.digest(msg.toOpenArray(HEAD_SIZE, msg.high)), signature)
   result.payload = msg[HEAD_SIZE + 1 .. ^1]
 
 proc expiration(): uint32 =
@@ -99,9 +100,10 @@ proc sendTo*(socket: AsyncFD, data: seq[byte], ip: IpAddress, port: Port,
   var sa: Sockaddr_storage
   var ln: Socklen
   ip.toSockaddr(port, sa, ln)
-  GC_ref(data)
-  await sendTo(socket, unsafeAddr data[0], data.len, cast[ptr Sockaddr](addr sa), ln)
-  GC_unref(data)
+  try:
+    await sendTo(socket, unsafeAddr data[0], data.len, cast[ptr Sockaddr](addr sa), ln)
+  except:
+    error "sendTo failed: ", getCurrentExceptionMsg()
 
 proc send(d: DiscoveryProtocol, n: Node, data: seq[byte]) =
   asyncCheck d.socket.getFd().AsyncFD.sendTo(data, n.address.ip, n.address.udpPort)
@@ -153,7 +155,7 @@ proc newDiscoveryProtocol*(privKey: PrivateKey, address: Address, bootstrapNodes
   result.address = address
   result.bootstrapNodes = newSeqOfCap[Node](bootstrapNodes.len)
   for n in bootstrapNodes: result.bootstrapNodes.add(newNode(n))
-  result.thisNode = newNode(privKey.public_key, address)
+  result.thisNode = newNode(privKey.getPublicKey(), address)
   result.kademlia = newKademliaProtocol(result.thisNode, result) {.explain.}
 
 proc recvPing(d: DiscoveryProtocol, node: Node, msgHash: MDigest[256]) {.inline.} =
@@ -187,7 +189,11 @@ proc recvNeighbours(d: DiscoveryProtocol, node: Node, payload: Bytes) {.inline.}
 
     let udpPort = n.listElem(1).toInt(uint16).Port
     let tcpPort = n.listElem(2).toInt(uint16).Port
-    let pk = parsePublicKey(n.listElem(3).toBytes.toOpenArray())
+    var pk: PublicKey
+    if recoverPublicKey(n.listElem(3).toBytes.toOpenArray(), pk) != EthKeysStatus.Success:
+      warn "Could not parse public key"
+      continue
+
     neighbours.add(newNode(pk, Address(ip: ip, udpPort: udpPort, tcpPort: tcpPort)))
   d.kademlia.recvNeighbours(node, neighbours)
 
@@ -206,24 +212,28 @@ proc expirationValid(rlpEncodedPayload: seq[byte]): bool {.inline.} =
 proc receive(d: DiscoveryProtocol, a: Address, msg: Bytes) =
   var msgHash: MDigest[256]
   if validateMsgHash(msg, msgHash):
-    let (remotePubkey, cmdId, payload) = unpack(msg)
-    # echo "received cmd: ", cmdId, ", from: ", a
-    # echo "pubkey: ", remotePubkey.raw_key.toHex()
-    if expirationValid(payload):
-      let node = newNode(remotePubkey, a)
-      case cmdId
-      of cmdPing:
-        d.recvPing(node, msgHash)
-      of cmdPong:
-        d.recvPong(node, payload)
-      of cmdNeighbours:
-        d.recvNeighbours(node, payload)
-      of cmdFindNode:
-        d.recvFindNode(node, payload)
+    var remotePubkey: PublicKey
+    if recoverMsgPublicKey(msg, remotePubkey):
+      let (cmdId, payload) = unpack(msg)
+      # echo "received cmd: ", cmdId, ", from: ", a
+      # echo "pubkey: ", remotePubkey.raw_key.toHex()
+      if expirationValid(payload):
+        let node = newNode(remotePubkey, a)
+        case cmdId
+        of cmdPing:
+          d.recvPing(node, msgHash)
+        of cmdPong:
+          d.recvPong(node, payload)
+        of cmdNeighbours:
+          d.recvNeighbours(node, payload)
+        of cmdFindNode:
+          d.recvFindNode(node, payload)
+        else:
+          echo "Unknown command: ", cmdId
       else:
-        echo "Unknown command: ", cmdId
+        debug "Received msg ", cmdId, " from ", a, " already expired"
     else:
-      debug "Received msg ", cmdId, " from ", a, " already expired"
+      error "Wrong public key from ", a
   else:
     error "Wrong msg mac from ", a
 
@@ -236,10 +246,13 @@ proc runListeningLoop(d: DiscoveryProtocol) {.async.} =
     slen = sizeof(saddr).Socklen
     let received = await recvFromInto(d.socket.getFd().AsyncFD, addr buf[0], buf.len, cast[ptr SockAddr](addr saddr), addr slen)
     buf.setLen(received)
-    var port: Port
-    var ip: IpAddress
-    fromSockAddr(saddr, slen, ip, port)
-    d.receive(Address(ip: ip, udpPort: port, tcpPort: port), buf)
+    try:
+      var port: Port
+      var ip: IpAddress
+      fromSockAddr(saddr, slen, ip, port)
+      d.receive(Address(ip: ip, udpPort: port, tcpPort: port), buf)
+    except:
+      error "receive failed: ", getCurrentExceptionMsg()
 
 proc open*(d: DiscoveryProtocol) =
   d.socket = newAsyncSocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
@@ -254,17 +267,19 @@ proc resolve*(d: DiscoveryProtocol, n: NodeId): Future[Node] =
   d.kademlia.resolve(n)
 
 when isMainModule:
-  import logging
-  from private.conversion_bytes import hexToSeqByteBE # from eth_keys
+  import logging, byteutils
 
   addHandler(newConsoleLogger())
 
   block:
-    let m = hexToSeqByteBE"79664bff52ee17327b4a2d8f97d8fb32c9244d719e5038eb4f6b64da19ca6d271d659c3ad9ad7861a928ca85f8d8debfbe6b7ade26ad778f2ae2ba712567fcbd55bc09eb3e74a893d6b180370b266f6aaf3fe58a0ad95f7435bf3ddf1db940d20102f2cb842edbd4d182944382765da0ab56fb9e64a85a597e6bb27c656b4f1afb7e06b0fd4e41ccde6dba69a3c4a150845aaa4de2"
+    let m = hexToSeqByte"79664bff52ee17327b4a2d8f97d8fb32c9244d719e5038eb4f6b64da19ca6d271d659c3ad9ad7861a928ca85f8d8debfbe6b7ade26ad778f2ae2ba712567fcbd55bc09eb3e74a893d6b180370b266f6aaf3fe58a0ad95f7435bf3ddf1db940d20102f2cb842edbd4d182944382765da0ab56fb9e64a85a597e6bb27c656b4f1afb7e06b0fd4e41ccde6dba69a3c4a150845aaa4de2"
     var msgHash: MDigest[256]
     doAssert(validateMsgHash(m, msgHash))
-    let (remotePubkey, cmdId, payload) = unpack(m)
-    assert(payload == hexToSeqByteBE"f2cb842edbd4d182944382765da0ab56fb9e64a85a597e6bb27c656b4f1afb7e06b0fd4e41ccde6dba69a3c4a150845aaa4de2")
+    var remotePubkey: PublicKey
+    doAssert(recoverMsgPublicKey(m, remotePubkey))
+
+    let (cmdId, payload) = unpack(m)
+    assert(payload == hexToSeqByte"f2cb842edbd4d182944382765da0ab56fb9e64a85a597e6bb27c656b4f1afb7e06b0fd4e41ccde6dba69a3c4a150845aaa4de2")
     assert(cmdId == cmdPong)
     assert(remotePubkey == initPublicKey("78de8a0916848093c73790ead81d1928bec737d565119932b98c6b100d944b7a95e94f847f689fc723399d2e31129d182f7ef3863f2b4c820abbf3ab2722344d"))
 
