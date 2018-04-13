@@ -12,7 +12,7 @@ type
     header: BlockHeader
     body {.rlpInline.}: BlockBody
 
-rlpxProtocol("eth", 63):
+rlpxProtocol eth, 63:
   proc status(p: Peer, protocolVersion, networkId, td: P,
               bestHash, genesisHash: KeccakHash) =
     discard

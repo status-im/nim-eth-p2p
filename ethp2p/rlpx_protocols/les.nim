@@ -30,7 +30,7 @@ type
     status*: TransactionStatus
     data*: Blob
 
-rlpxProtocol("les", 2):
+rlpxProtocol les, 2:
 
   ## Handshake
   ##
