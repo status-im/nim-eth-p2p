@@ -9,13 +9,16 @@
 
 ## This module implements RLPx cryptography
 
-import nimcrypto/rijndael, nimcrypto/bcmode, nimcrypto/keccak,
-       nimcrypto/utils
+import
+  ranges/stackarrays, rlp/types,
+  nimcrypto/[rijndael, bcmode, keccak, utils]
+
 from auth import ConnectionSecret
 
 const
   RlpHeaderLength* = 16
   RlpMacLength* = 16
+  maxUInt24 = (not uint32(0)) shl 8
 
 type
   SecretState* = object
@@ -32,6 +35,8 @@ type
     BufferOverrun,   ## Buffer overrun error
     IncompleteError, ## Data incomplete error
     IncorrectArgs    ## Incorrect arguments
+
+  RlpxHeader* = array[16, byte]
 
 proc roundup16*(x: int): int {.inline.} =
   ## Procedure aligns `x` to
@@ -63,7 +68,8 @@ proc initSecretState*(secrets: ConnectionSecret, context: var SecretState) =
   context.imac = secrets.ingressMac
 
 template encryptedLength*(size: int): int =
-  ## Returns size of encrypted message for frame with length `size`.
+  ## Returns the number of bytes used by the entire frame of a
+  ## message with size `size`:
   RlpHeaderLength + roundup16(size) + 2 * RlpMacLength
 
 template decryptedLength*(size: int): int =
@@ -87,7 +93,7 @@ proc encrypt*(c: var SecretState, header: openarray[byte],
   let headerMacPos = RlpHeaderLength
   let framePos = RlpHeaderLength + RlpMacLength
   let frameMacPos = RlpHeaderLength * 2 + frameLength
-  if len(header) != RlpHeaderLength or len(frame) == 0 or length > len(output):
+  if len(header) != RlpHeaderLength or len(frame) == 0 or length != len(output):
     return IncorrectArgs
   # header_ciphertext = self.aes_enc.update(header)
   c.aesenc.encrypt(header, toa(output, 0, RlpHeaderLength))
@@ -126,6 +132,28 @@ proc encrypt*(c: var SecretState, header: openarray[byte],
   copyMem(addr output[frameMacPos], addr frameMac.data[0], RlpHeaderLength)
   result = Success
 
+template encryptMsg*(msg: BytesRange, secrets: SecretState): auto =
+  var header: RlpxHeader
+
+  if data.len > int(maxUInt24):
+    raise newException(OverflowError, "RLPx message size exceeds limit")
+
+  # write the frame size in the first 3 bytes of the header
+  header[0] = byte(msg.len shl 16)
+  header[1] = byte(msg.len shl 8)
+  header[2] = byte(msg.len)
+
+  # XXX:
+  # This would be safer if we use a thread-local sequ for the temporary buffer
+  var outCipherText = allocStackArray(byte, encryptedLength(msg.len))
+  let s = encrypt(secrets, header, msg.toOpenArray, outCipherText.toOpenArray)
+  assert s == Success
+
+  outCipherText
+
+proc getBodySize*(a: RlpxHeader): int =
+  (int(a[0]) shl 16) or (int(a[1]) shl 8) or int(a[2])
+
 proc decryptHeader*(c: var SecretState, data: openarray[byte],
                     output: var openarray[byte]): RlpxStatus =
   ## Decrypts header `data` using SecretState `c` context and store
@@ -162,6 +190,14 @@ proc decryptHeader*(c: var SecretState, data: openarray[byte],
     # return self.aes_dec.update(header_ciphertext)
     c.aesdec.decrypt(toa(data, 0, RlpHeaderLength), output)
     result = Success
+
+proc decryptHeaderAndGetMsgSize*(c: var SecretState,
+                                 encryptedHeader: openarray[byte],
+                                 outSize: var int): RlpxStatus =
+  var decryptedHeader: RlpxHeader
+  result = decryptHeader(c, encryptedHeader, decryptedHeader)
+  if result == Success:
+    outSize = decryptedHeader.getBodySize
 
 proc decryptBody*(c: var SecretState, data: openarray[byte], bodysize: int,
                   output: var openarray[byte], outlen: var int): RlpxStatus =
