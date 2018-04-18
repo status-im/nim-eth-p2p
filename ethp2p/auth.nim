@@ -75,15 +75,15 @@ type
   ConnectionSecret* = object
     aesKey*: array[aes256.sizeKey, byte]
     macKey*: array[KeyLength, byte]
-    egressMac*: array[keccak256.sizeDigest, byte]
-    ingressMac*: array[keccak256.sizeDigest, byte]
+    egressMac*: keccak256
+    ingressMac*: keccak256
 
   AuthException* = object of Exception
 
 template toa(a, b, c: untyped): untyped =
   toOpenArray((a), (b), (b) + (c) - 1)
 
-proc sxor[T](a: var openarray[T], b: openarray[T]) =
+proc sxor[T](a: var openarray[T], b: openarray[T]) {.inline.} =
   assert(len(a) == len(b))
   for i in 0 ..< len(a):
     a[i] = a[i] xor b[i]
@@ -476,7 +476,6 @@ proc getSecrets*(h: Handshake, authmsg: openarray[byte],
     ctx0: keccak256
     ctx1: keccak256
     mac1: MDigest[256]
-    mac2: MDigest[256]
     xornonce: Nonce
 
   # ecdhe-secret = ecdh.agree(ephemeral-privkey, remote-ephemeral-pubk)
@@ -516,26 +515,22 @@ proc getSecrets*(h: Handshake, authmsg: openarray[byte],
   ctx0.init()
   ctx0.update(xornonce)
   ctx0.update(authmsg)
-  mac1 = ctx0.finish()
 
   # ingress-mac = keccak256(mac-secret ^ initiator-nonce || auth-recvd-ack)
   xornonce = secret.macKey
   xornonce.sxor(h.initiatorNonce)
-  ctx0.init()
-  ctx0.update(xornonce)
-  ctx0.update(ackmsg)
-  mac2 = ctx0.finish()
-
-  ctx0.init() # clean keccak256 context
-  zeroMem(addr xornonce[0], sizeof(Nonce)) # clean xornonce
+  ctx1.init()
+  ctx1.update(xornonce)
+  ctx1.update(ackmsg)
+  burnMem(xornonce)
 
   if Initiator in h.flags:
-    secret.egressMac = mac1.data
-    secret.ingressMac = mac2.data
+    secret.egressMac = ctx0
+    secret.ingressMac = ctx1
   else:
-    secret.ingressMac = mac1.data
-    secret.egressMac = mac2.data
+    secret.ingressMac = ctx0
+    secret.egressMac = ctx1
 
-  burnMem(mac1)
-  burnMem(mac2)
+  ctx0.clear()
+  ctx1.clear()
   result = Success
