@@ -1,7 +1,7 @@
 import
   macros, sets, algorithm, async, asyncnet, asyncfutures,
-  hashes, rlp, ranges/ptr_arith, eth_keys, ethereum_types,
-  kademlia, discovery, auth
+  hashes, rlp, ranges/[stackarrays, ptr_arith], eth_keys,
+  ethereum_types, kademlia, discovery, auth, rlpxcrypt
 
 type
   P2PNodeId = MDigest[512]
@@ -17,7 +17,7 @@ type
     socket: AsyncSocket
     dispatcher: Dispatcher
     networkId: int
-    sessionSecrets: ConnectionSecret
+    secretsState: SecretState
     connectionState: ConnectionState
     protocolStates: seq[RootRef]
     remote*: Node
@@ -67,7 +67,6 @@ type
 const
   baseProtocolVersion = 4
   clienId = "Nimbus 0.1.0"
-  maxUInt24 = (not uint32(0)) shl 8
 
 var
   gProtocols = newSeq[ProtocolInfo](0)
@@ -206,55 +205,9 @@ proc dispatchMsg(peer: Peer, msgId: int, msgData: var Rlp) =
 
   thunk(peer, msgData)
 
-proc updateMac(mac: var openarray[byte], key: openarray[byte], bytes: openarray[byte]) =
-  # XXX TODO: implement this
-  discard
-
-type
-  RlpxHeader = array[32, byte]
-
-proc send(p: Peer, data: BytesRange) =
-  var header: RlpxHeader
-  if data.len > int(maxUInt24):
-    raise newException(OverflowError, "RLPx message size exceeds limit")
-
-  # write the frame size in the first 3 bytes of the header
-  header[0] = byte(data.len shl 16)
-  header[1] = byte(data.len shl 8)
-  header[2] = byte(data.len)
-
-  # encrypt(addr header[0], 16)
-  # TODO
-
-  # update mac from first 16 bytes
-  updateMac(p.sessionSecrets.egressMac,
-            p.sessionSecrets.macKey,
-            header.toOpenArray(0, 16))
-
-  # write the mac in the second 16 bytes
-  header[16..31] = p.sessionSecrets.egressMac[0..15]
-
-
-  discard """
-      def encrypt(self, header: bytes, frame: bytes) -> bytes:
-          if len(header) != HEADER_LEN:
-              raise ValueError("Unexpected header length: {}".format(len(header)))
-
-          header_ciphertext = self.aes_enc.update(header)
-          mac_secret = self.egress_mac.digest()[:HEADER_LEN]
-          self.egress_mac.update(sxor(self.mac_enc(mac_secret), header_ciphertext))
-          header_mac = self.egress_mac.digest()[:HEADER_LEN]
-
-          frame_ciphertext = self.aes_enc.update(frame)
-          self.egress_mac.update(frame_ciphertext)
-          fmac_seed = self.egress_mac.digest()[:HEADER_LEN]
-
-          mac_secret = self.egress_mac.digest()[:HEADER_LEN]
-          self.egress_mac.update(sxor(self.mac_enc(mac_secret), fmac_seed))
-          frame_mac = self.egress_mac.digest()[:HEADER_LEN]
-
-          return header_ciphertext + header_mac + frame_ciphertext + frame_mac
-  """
+proc send(p: Peer, data: BytesRange): Future[void] =
+  var cipherText = encryptMsg(data, p.secretsState)
+  result = p.socket.send(addr cipherText[0], cipherText.len)
 
 proc getMsgLen(header: RlpxHeader): int =
   32
@@ -266,17 +219,36 @@ proc fullRecvInto(s: AsyncSocket, buffer: pointer, bufferLen: int) {.async.} =
     receivedBytes += await s.recvInto(buffer.shift(receivedBytes),
                                       bufferLen - receivedBytes)
 
+template fullRecvInto(s: AsyncSocket, buff: var openarray[byte]): auto =
+  fullRecvInto(s, addr buff[0], buff.len)
+
 proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   ##  This procs awaits the next complete RLPx message in the TCP stream
 
-  var header: RlpxHeader
-  await peer.socket.fullRecvInto(header.baseAddr, sizeof(header))
+  var headerBytes: array[32, byte]
+  await peer.socket.fullRecvInto(headerBytes)
 
-  let msgLen = header.getMsgLen
-  var msgData = newSeq[byte](msgLen).toRange
-  await peer.socket.fullRecvInto(msgData.baseAddr, msgData.len)
+  var msgSize: int
+  if decryptHeaderAndGetMsgSize(peer.secretsState,
+                                headerBytes, msgSize) != RlpxStatus.Success:
+    return (-1, zeroBytesRlp)
 
-  var rlp = rlpFromBytes(msgData)
+  let remainingBytes = encryptedLength(msgSize) - 32
+  # XXX: Migrate this to a thread-local seq
+  var encryptedBytes = newSeq[byte](remainingBytes)
+  await peer.socket.fullRecvInto(encryptedBytes.baseAddr, remainingBytes)
+
+  let decryptedMaxLength = decryptedLength(msgSize)
+  var
+    decryptedBytes = newSeq[byte](decryptedMaxLength)
+    decryptedBytesCount = 0
+
+  if decryptBody(peer.secretsState, encryptedBytes, msgSize,
+                 decryptedBytes, decryptedBytesCount) != RlpxStatus.Success:
+    return (-1, zeroBytesRlp)
+
+  decryptedBytes.setLen(decryptedBytesCount)
+  var rlp = rlpFromBytes(decryptedBytes.toRange)
   let msgId = rlp.read(int)
   return (msgId, rlp)
 
@@ -466,6 +438,9 @@ macro rlpxProtocol*(protoIdentifier: untyped,
 
       # XXX TODO: check that the first param has the correct type
       n.params[1][0] = peer
+      echo n.params.treeRepr
+      n.params[0] = newTree(nnkBracketExpr,
+                            newIdentNode("Future"), newIdentNode("void"))
 
       let writeMsgId = if isSubprotocol:
         quote: `writeMsgId`(`protocol`, `nextId`, `peer`, `rlpWriter`)
@@ -476,7 +451,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
         var `rlpWriter` = `initRlpWriter`()
         `writeMsgId`
         `appendParams`
-        `send`(`peer`, `finish`(`rlpWriter`))
+        return `send`(`peer`, `finish`(`rlpWriter`))
 
       result.add n
       result.add newCall(bindSym("registerMsg"),
@@ -559,14 +534,17 @@ proc rlpxConnect*(myKeys: KeyPair, remote: Node): Future[Peer] {.async.} =
   await result.socket.fullRecvInto(addr ackMsg, ackMsgLen)
 
   check handshake.decodeAckMessage(^ackMsg)
-  check handshake.getSecrets(^authMsg, ^ackMsg, result.sessionSecrets)
+  var secrets: ConnectionSecret
+  check handshake.getSecrets(^authMsg, ^ackMsg, secrets)
+  initSecretState(secrets, result.secretsState)
 
   var
     # XXX: TODO: get these from somewhere
     nodeId: P2PNodeId
     listeningPort = uint 0
 
-  hello(result, baseProtocolVersion, clienId, gCapabilities, listeningPort, nodeId)
+  discard hello(result, baseProtocolVersion, clienId,
+                gCapabilities, listeningPort, nodeId)
 
   var response = await result.nextMsg(p2p.hello, discardOthers = true)
   result.dispatcher = getDispatcher(response.capabilities)
@@ -597,5 +575,5 @@ when isMainModule:
     proc bar(p: Peer, i: int, s: string)
 
   var p = Peer()
-  p.bar(10, "test")
+  discard p.bar(10, "test")
 

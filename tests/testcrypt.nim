@@ -86,9 +86,6 @@ proc testValue(s: string): string =
       result = item[1]
       break
 
-template getBodySize(a: openarray[byte]): int =
-  (int(a[0]) shl 16) or (int(a[1]) shl 8) or int(a[2])
-
 suite "Ethereum RLPx encryption/decryption test suite":
   proc newTestHandshake(flags: set[HandshakeFlag]): Handshake =
     result = newHandshake(flags)
