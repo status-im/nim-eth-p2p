@@ -16,11 +16,11 @@ type
     id: P2PNodeId # XXX: not fillet yed
     socket: AsyncSocket
     dispatcher: Dispatcher
-    # privKey: AesKey
     networkId: int
     sessionSecrets: ConnectionSecret
     connectionState: ConnectionState
     protocolStates: seq[RootRef]
+    remote*: Node
 
   MessageHandler* = proc(x: Peer, data: var Rlp)
 
@@ -64,11 +64,6 @@ type
 
   MalformedMessageError* = object of Exception
 
-  KeyPair* = object
-    # XXX: This should probably be in eth_keys
-    pubKey*: PublicKey
-    privKey*: PrivateKey
-
 const
   baseProtocolVersion = 4
   clienId = "Nimbus 0.1.0"
@@ -82,6 +77,8 @@ var
 
 # Dispatcher
 #
+
+proc `$`*(p: Peer): string {.inline.} = $p.remote
 
 proc hash(d: Dispatcher): int =
   hash(d.protocolOffsets)
@@ -529,11 +526,10 @@ rlpxProtocol p2p, 0:
 
 import typetraits
 
-proc rlpxConnect*(myKeys: KeyPair, remoteKey: PublicKey,
-                  address: Address): Future[Peer] {.async.} =
+proc rlpxConnect*(myKeys: KeyPair, remote: Node): Future[Peer] {.async.} =
   # TODO: Make sure to close the socket in case of exception
   result.socket = newAsyncSocket()
-  await result.socket.connect($address.ip, address.tcpPort)
+  await result.socket.connect($remote.address.ip, remote.address.tcpPort)
 
   const encryptionEnabled = true
 
@@ -548,12 +544,12 @@ proc rlpxConnect*(myKeys: KeyPair, remoteKey: PublicKey,
     arr.toOpenArray(0, `arr Len` - 1)
 
   var handshake = newHandshake({Initiator})
-  handshake.host.seckey = myKeys.privKey
+  handshake.host.seckey = myKeys.seckey
   handshake.host.pubkey = myKeys.pubKey
 
   var authMsg: array[AuthMessageMaxEIP8, byte]
   var authMsgLen = 0
-  check authMessage(handshake, remoteKey, authMsg, authMsgLen,
+  check authMessage(handshake, remote.pubkey, authMsg, authMsgLen,
                     encrypt = encryptionEnabled)
 
   await result.socket.send(addr authMsg[0], authMsgLen)
@@ -576,6 +572,7 @@ proc rlpxConnect*(myKeys: KeyPair, remoteKey: PublicKey,
   result.dispatcher = getDispatcher(response.capabilities)
   result.id = response.nodeId
   result.connectionState = Connected
+  result.remote = remote
   newSeq(result.protocolStates, gProtocols.len)
   # XXX: initialize the sub-protocol states
 
