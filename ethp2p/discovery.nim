@@ -35,7 +35,7 @@ type
   DiscoveryProtocol* = ref object
     privKey: PrivateKey
     address: Address
-    bootstrapNodes: seq[Node]
+    bootstrapNodes*: seq[Node]
     thisNode: Node
     kademlia: KademliaProtocol[DiscoveryProtocol]
     socket: AsyncSocket
@@ -265,6 +265,12 @@ proc bootstrap*(d: DiscoveryProtocol) {.async.} =
 
 proc resolve*(d: DiscoveryProtocol, n: NodeId): Future[Node] =
   d.kademlia.resolve(n)
+
+proc lookupRandom*(d: DiscoveryProtocol): Future[seq[Node]] {.inline.} =
+  d.kademlia.lookupRandom()
+
+proc randomNodes*(d: DiscoveryProtocol, count: int): seq[Node] {.inline.} =
+  d.kademlia.randomNodes(count)
 
 when isMainModule:
   import logging, byteutils

@@ -1,5 +1,5 @@
 import asyncdispatch, net, uri, logging, tables, hashes, times, algorithm, sets,
-  sequtils
+  sequtils, random
 from strutils import parseInt
 
 export sets # TODO: This should not be needed, but compilation fails otherwise
@@ -213,6 +213,9 @@ proc neighbours(r: RoutingTable, id: NodeId, k: int = BUCKET_SIZE): seq[Node] =
   result = sortedByIt(result, it.distanceTo(id))
   if result.len > k:
     result.setLen(k)
+
+proc len(r: RoutingTable): int =
+  for b in r.buckets: result += b.len
 
 proc newKademliaProtocol*[Wire](thisNode: Node, wire: Wire): KademliaProtocol[Wire] =
   result.new()
@@ -439,6 +442,27 @@ proc recvFindNode*(k: KademliaProtocol, remote: Node, nodeId: NodeId) =
   var found = k.routing.neighbours(nodeId)
   found.sort() do(x, y: Node) -> int: cmp(x.id, y.id)
   k.wire.sendNeighbours(remote, found)
+
+proc randomNodes*(k: KademliaProtocol, count: int): seq[Node] =
+  var count = count
+  let sz = k.routing.len
+  if count > sz:
+    warn  "Cannot get ", count, " nodes as RoutingTable contains only ", sz, " nodes"
+    count = sz
+
+  result = newSeqOfCap[Node](count)
+  var seen = initSet[Node]()
+
+  # This is a rather inneficient way of randomizing nodes from all buckets, but even if we
+  # iterate over all nodes in the routing table, the time it takes would still be
+  # insignificant compared to the time it takes for the network roundtrips when connecting
+  # to nodes.
+  while len(seen) < count:
+    let bucket = k.routing.buckets.rand()
+    let node = bucket.nodes.rand()
+    if node notin seen:
+      result.add(node)
+      seen.incl(node)
 
 when isMainModule:
   proc randomNode(): Node =
