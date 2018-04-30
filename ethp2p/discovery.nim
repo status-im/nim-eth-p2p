@@ -97,8 +97,7 @@ proc recoverMsgPublicKey(msg: Bytes, pk: var PublicKey): bool =
     pk) == EthKeysStatus.Success
 
 proc unpack(msg: Bytes): tuple[cmdId: CommandId, payload: Bytes] =
-  result.cmdId = msg[HEAD_SIZE].CommandId
-  result.payload = msg[HEAD_SIZE + 1 .. ^1]
+  result = (cmdId: msg[HEAD_SIZE].CommandId, payload: msg[HEAD_SIZE + 1 .. ^1])
 
 proc expiration(): uint32 =
   result = uint32(epochTime() + EXPIRATION)
