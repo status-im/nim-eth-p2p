@@ -3,9 +3,10 @@
 #              (c) Copyright 2018
 #       Status Research & Development GmbH
 #
-#    See the file "LICENSE", included in this
-#    distribution, for details about the copyright.
+#            Licensed under either of
+#  Apache License, version 2.0, (LICENSE-APACHEv2)
+#            MIT license (LICENSE-MIT)
 #
 
-import ethp2p/ecc, ethp2p/ecies, ethp2p/auth, ethp2p/hexdump
-export ecc, ecies, auth, hexdump
+import ethp2p/ecies, ethp2p/auth, ethp2p/hexdump, ethp2p/enode
+export ecies, auth, enode, hexdump

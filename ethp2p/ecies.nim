@@ -3,8 +3,9 @@
 #              (c) Copyright 2018
 #       Status Research & Development GmbH
 #
-#    See the file "LICENSE", included in this
-#    distribution, for details about the copyright.
+#            Licensed under either of
+#  Apache License, version 2.0, (LICENSE-APACHEv2)
+#            MIT license (LICENSE-MIT)
 #
 
 ## This module implements ECIES method encryption/decryption.
