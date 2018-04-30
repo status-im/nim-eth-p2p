@@ -125,6 +125,15 @@ proc initENode*(uri: string): ENode {.inline.} =
   if res != Success:
     raiseENodeError(res)
 
+proc initENode*(pubkey: PublicKey, address: Address): ENode =
+  ## Create ENode object from public key ``pubkey`` and ``address``.
+  result.pubkey = pubkey
+  if address.tcpPort == Port(0):
+    raiseENodeError(IncorrectPort)
+  if address.udpPort == Port(0):
+    raiseENodeError(IncorrectDiscPort)
+  result.address = address
+
 proc isCorrect*(n: ENode): bool =
   ## Returns ``true`` if ENode ``n`` is properly filled.
   if n.address.ip.family notin {IpAddressFamily.IPv4, IpAddressFamily.IPv6}:
