@@ -1,3 +1,13 @@
+#
+#                 Ethereum P2P
+#              (c) Copyright 2018
+#       Status Research & Development GmbH
+#
+#            Licensed under either of
+#  Apache License, version 2.0, (LICENSE-APACHEv2)
+#            MIT license (LICENSE-MIT)
+#
+
 from strutils import nil
 import asyncnet, asyncdispatch, net, times, nativesockets, algorithm, logging
 import kademlia

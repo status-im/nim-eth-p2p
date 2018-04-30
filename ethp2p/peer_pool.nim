@@ -1,3 +1,13 @@
+#
+#                 Ethereum P2P
+#              (c) Copyright 2018
+#       Status Research & Development GmbH
+#
+#            Licensed under either of
+#  Apache License, version 2.0, (LICENSE-APACHEv2)
+#            MIT license (LICENSE-MIT)
+#
+
 import logging, tables, asyncdispatch, times, random
 import eth_keys
 import discovery, rlpx, kademlia

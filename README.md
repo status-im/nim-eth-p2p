@@ -1,6 +1,6 @@
 # nim-eth-p2p [![Build Status](https://travis-ci.org/status-im/nim-eth-p2p.svg?branch=master)](https://travis-ci.org/status-im/nim-eth-p2p) [![Build status](https://ci.appveyor.com/api/projects/status/i4txsa2pdyaahmn0/branch/master?svg=true)](https://ci.appveyor.com/project/cheatfate/nim-eth-p2p/branch/master)
 
-[[Nim]] Ethereum P2P protocol implementation
+[Nim] Ethereum P2P protocol implementation
 
 ## RLPx
 
