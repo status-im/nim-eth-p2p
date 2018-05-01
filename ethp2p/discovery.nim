@@ -10,10 +10,10 @@
 
 from strutils import nil
 import asyncnet, asyncdispatch, net, times, nativesockets, algorithm, logging
-import kademlia
+import kademlia, enode
 import eth_keys, rlp, ranges, ttmath, nimcrypto
 
-export Address, Node
+export Node
 
 const
   MAINNET_BOOTNODES* = [
@@ -115,17 +115,20 @@ proc sendTo*(socket: AsyncFD, data: seq[byte], ip: IpAddress, port: Port,
     error "sendTo failed: ", getCurrentExceptionMsg()
 
 proc send(d: DiscoveryProtocol, n: Node, data: seq[byte]) =
-  asyncCheck d.socket.getFd().AsyncFD.sendTo(data, n.address.ip, n.address.udpPort)
+  asyncCheck d.socket.getFd().AsyncFD.sendTo(data,
+                                             n.node.address.ip,
+                                             n.node.address.udpPort)
 
 proc sendPing*(d: DiscoveryProtocol, n: Node): seq[byte] =
-  let payload = rlp.encode((PROTO_VERSION, d.address, n.address, expiration()))
+  let payload = rlp.encode((PROTO_VERSION, d.address, n.node.address,
+                            expiration()))
   let msg = pack(cmdPing, payload, d.privKey)
   result = msg[0 ..< MAC_SIZE]
   debug ">>> ping ", n
   d.send(n, msg)
 
 proc sendPong*(d: DiscoveryProtocol, n: Node, token: MDigest[256]) =
-  let payload = rlp.encode((n.address, token, expiration()))
+  let payload = rlp.encode((n.node.address, token, expiration()))
   let msg = pack(cmdPong, payload, d.privKey)
   debug ">>> pong ", n
   d.send(n, msg)
@@ -152,7 +155,8 @@ proc sendNeighbours*(d: DiscoveryProtocol, node: Node, neighbours: seq[Node]) =
       nodes.setLen(0)
 
   for i, n in neighbours:
-    nodes.add((n.address.ip, n.address.udpPort, n.address.tcpPort, n.pubkey))
+    nodes.add((n.node.address.ip, n.node.address.udpPort,
+               n.node.address.tcpPort, n.node.pubkey))
     if nodes.len == MAX_NEIGHBOURS_PER_PACKET:
       flush()
 

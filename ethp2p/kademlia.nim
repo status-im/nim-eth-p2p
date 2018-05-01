@@ -14,7 +14,7 @@ from strutils import parseInt
 
 export sets # TODO: This should not be needed, but compilation fails otherwise
 
-import eth_keys, ttmath, nimcrypto
+import eth_keys, ttmath, nimcrypto, enode
 
 type
   KademliaProtocol* [Wire] = ref object
@@ -28,14 +28,8 @@ type
   NodeId* = UInt256 # This is probably too small...
 
   Node* = ref object
-    pubkey*: PublicKey
-    address*: Address
+    node*: ENode
     id*: NodeId
-
-  Address* = object
-    ip*: IpAddress
-    udpPort*: Port
-    tcpPort*: Port
 
   RoutingTable = object
     thisNode: Node
@@ -59,23 +53,21 @@ proc toNodeId(pk: PublicKey): NodeId =
 
 proc newNode*(pk: PublicKey, address: Address): Node =
   result.new()
-  result.pubkey = pk
-  result.address = address
+  result.node = initENode(pk, address)
   result.id = pk.toNodeId()
 
 proc newNode*(uriString: string): Node =
-  let u = parseUri(uriString)
-  let k = initPublicKey(u.username)
-  let port = parseInt(u.port).Port
-  newNode(k, Address(ip: parseIpAddress(u.hostname), udpPort: port, tcpPort: port))
+  result.new()
+  result.node = initENode(uriString)
+  result.id = result.node.pubkey.toNodeId()
 
 proc distanceTo(n: Node, id: NodeId): UInt256 = n.id xor id
 
 proc `$`*(n: Node): string =
-  "Node[" & $n.address.ip & ":" & $n.address.udpPort & "]"
+  "Node[" & $n.node.address.ip & ":" & $n.node.address.udpPort & "]"
 
-proc hash*(n: Node): hashes.Hash = hash(n.pubkey.data)
-proc `==`*(a, b: Node): bool = a.pubkey == b.pubkey
+proc hash*(n: Node): hashes.Hash = hash(n.node.pubkey.data)
+proc `==`*(a, b: Node): bool = a.node.pubkey == b.node.pubkey
 
 proc newKBucket(istart, iend: NodeId): KBucket =
   result.new()
@@ -140,18 +132,19 @@ proc isFull(k: KBucket): bool = k.len == BUCKET_SIZE
 
 proc contains(k: KBucket, n: Node): bool = n in k.nodes
 
-proc binaryGetBucketForNode(buckets: openarray[KBucket], node: Node): KBucket {.inline.} =
+proc binaryGetBucketForNode(buckets: openarray[KBucket],
+                            n: Node): KBucket {.inline.} =
   ## Given a list of ordered buckets, returns the bucket for a given node.
-  let bucketPos = lowerBound(buckets, node.id) do(a: KBucket, b: NodeId) -> int:
+  let bucketPos = lowerBound(buckets, n.id) do(a: KBucket, b: NodeId) -> int:
     cmp(a.iend, b)
   # Prevents edge cases where bisect_left returns an out of range index
   if bucketPos < buckets.len:
     let bucket = buckets[bucketPos]
-    if bucket.istart <= node.id and node.id <= bucket.iend:
+    if bucket.istart <= n.id and n.id <= bucket.iend:
       result = bucket
 
   if result.isNil:
-    raise newException(ValueError, "No bucket found for node with id " & $node.id)
+    raise newException(ValueError, "No bucket found for node with id " & $n.id)
 
 proc computeSharedPrefixBits(nodes: openarray[Node]): int =
   ## Count the number of prefix bits shared by all nodes.
@@ -227,7 +220,8 @@ proc neighbours(r: RoutingTable, id: NodeId, k: int = BUCKET_SIZE): seq[Node] =
 proc len(r: RoutingTable): int =
   for b in r.buckets: result += b.len
 
-proc newKademliaProtocol*[Wire](thisNode: Node, wire: Wire): KademliaProtocol[Wire] =
+proc newKademliaProtocol*[Wire](thisNode: Node,
+                                wire: Wire): KademliaProtocol[Wire] =
   result.new()
   result.thisNode = thisNode
   result.wire = wire
@@ -256,9 +250,9 @@ template onTimeout(b: untyped) =
   asyncCheck doSleep() do():
     b
 
-proc waitPong(k: KademliaProtocol, node: Node, token: seq[byte]): Future[bool] =
-  let pingid = token & @(node.pubkey.data)
-  assert(pingid notin k.pongFutures, "Already waiting for pong from " & $node)
+proc waitPong(k: KademliaProtocol, n: Node, token: seq[byte]): Future[bool] =
+  let pingid = token & @(n.node.pubkey.data)
+  assert(pingid notin k.pongFutures, "Already waiting for pong from " & $n)
   result = newFuture[bool]("waitPong")
   let fut = result
   k.pongFutures[pingid] = result
@@ -410,21 +404,21 @@ proc bootstrap*(k: KademliaProtocol, bootstrapNodes: seq[Node]) {.async.} =
     return
   discard await k.lookupRandom()
 
-proc recvPong*(k: KademliaProtocol, node: Node, token: seq[byte]) =
-  debug "<<< pong from ", node
+proc recvPong*(k: KademliaProtocol, n: Node, token: seq[byte]) =
+  debug "<<< pong from ", n
 
-  let pingid = token & @(node.pubkey.data)
+  let pingid = token & @(n.node.pubkey.data)
   var future: Future[bool]
   if k.pongFutures.take(pingid, future):
     future.complete(true)
 
-proc recvPing*(k: KademliaProtocol, node: Node, msgHash: any) =
-  debug "<<< ping from ", node
-  k.updateRoutingTable(node)
-  k.wire.sendPong(node, msgHash)
+proc recvPing*(k: KademliaProtocol, n: Node, msgHash: any) =
+  debug "<<< ping from ", n
+  k.updateRoutingTable(n)
+  k.wire.sendPong(n, msgHash)
 
   var future: Future[bool]
-  if k.pingFutures.take(node, future):
+  if k.pingFutures.take(n, future):
     future.complete(true)
 
 proc recvNeighbours*(k: KademliaProtocol, remote: Node, neighbours: seq[Node]) =
