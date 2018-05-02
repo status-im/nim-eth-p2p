@@ -22,7 +22,7 @@ type
     connectedNodes: Table[Node, Peer]
     running: bool
 
-  AsyncChainDb = ref object # TODO: This should be defined elsewhere
+  AsyncChainDb* = ref object # TODO: This should be defined elsewhere
 
 # class PeerPool:
 # PeerPool attempts to keep connections to at least min_peers on the given network.
@@ -181,3 +181,4 @@ proc start*(p: PeerPool) =
 #     self.logger.debug("No connected peers, sleeping a bit")
 #     await asyncio.sleep(0.5)
 #   return random.choice(self.peers)
+
