@@ -56,21 +56,12 @@ type
     # The dispatcher stores the mapping of negotiated message IDs between
     # two connected peers. The dispatcher objects are shared between
     # connections running with the same set of supported protocols.
-    # REVIEW: why bother? there aren't millions of peers anyway, so why not
-    #         keep it simple and keep this per peer? this just looks like
-    #         it introduces lots of book-keeping and opportunities for logic
-    #         errors. This also seems like the smallest piece of information
-    #         to share - we still have to keep per-peer, per protocol state
     #
     # `protocolOffsets` will hold one slot of each locally supported
     # protocol. If the other peer also supports the protocol, the stored
     # offset indicates the numeric value of the first message of the protocol
     # (for this particular connection). If the other peer doesn't support the
     # particular protocol, the stored offset is -1.
-    # REVIEW: The alternative is to store a messagehandler that does nothing -
-    #         or logs the call or returns a "ignored" status - this tends
-    #         to simplify code and remove unnecessary error handling and bounds
-    #         checking etc..
     #
     # `thunks` holds a mapping from valid message IDs to their handler procs.
     #
@@ -87,10 +78,6 @@ const
   baseProtocolVersion = 4
   clienId = "Nimbus 0.1.0"
 
-# REVIEW these globals will prevent us from using rlpx as a library, for example
-#        when setting up a simulation or test - a major use case for research
-#        I think a hard no-thanks stance on mutable globals is valuable if we
-#        want to pursue a library-first approach
 var
   gProtocols = newSeq[ProtocolInfo](0)
   gCapabilities = newSeq[Capability](0)
@@ -188,8 +175,6 @@ proc registerMsg(protocol: var ProtocolInfo,
 
 proc registerProtocol(protocol: ProtocolInfo) =
   # XXX: This can be done at compile-time in the future
-  # REVIEW: as long as there's an option to disable certain protocols at run time,
-  #         per globals-comment above
   if protocol.version > 0:
     let pos = lowerBound(gProtocols, protocol)
     gProtocols.insert(protocol, pos)
@@ -214,17 +199,11 @@ proc read*(rlp: var Rlp, T: typedesc[KeccakHash]): T =
 proc writeMsgId(p: ProtocolInfo, msgId: int, peer: Peer, rlpOut: var RlpWriter) =
   let baseMsgId = peer.dispatcher.protocolOffsets[p.index]
   if baseMsgId == -1:
-    # REVIEW: what's the use case for this exception? when is it expected that
-    #         someone will catch it and use the type to meaningfully handle the
-    #         error? else might just assert - seems like a logic error if this happens
-    #         and sending the message anyway seems harmless
     raise newException(UnsupportedProtocol,
                        p.nameStr & " is not supported by peer " & $peer.id)
   rlpOut.append(baseMsgId + msgId)
 
 proc dispatchMsg(peer: Peer, msgId: int, msgData: var Rlp) =
-  # REVIEW: who will call dispatchMsg? right now, only nextMsg, which more looks
-  #         like a way to short-circuit message dispatching..
   template invalidIdError: untyped =
     raise newException(ValueError,
       "RLPx message with an invalid id " & $msgId &
@@ -266,10 +245,6 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
 
   let remainingBytes = encryptedLength(msgSize) - 32
   # XXX: Migrate this to a thread-local seq
-  # REVIEW: or pass it in, allowing the caller to choose - they'll likely be in a
-  #      better position to decide if buffer should be reused or not. this will
-  #      also be useuful for chunked messages where part of the buffer may have
-  #      been processed and needs filling in
   var encryptedBytes = newSeq[byte](remainingBytes)
   await peer.socket.fullRecvInto(encryptedBytes.baseAddr, remainingBytes)
 
@@ -294,27 +269,6 @@ proc nextMsg*(peer: Peer, MsgType: typedesc,
   ## to their responsive handlers unless `discardOthers` is set to
   ## true. This may be useful when the protocol requires a very
   ## specific response to a given request. Use with caution.
-  # REVIEW: it's unclear to me how prioritization between regular
-  #         dispatching and nextMsg style dispatching should happen,
-  #         also between multiple nextMsg calls - who gets the
-  #         message first?
-  #         discardOthers looks like an easy way to introduce
-  #         "deadlocks" if there are two discardOthers calls in
-  #         flight
-  #         an alternative here would be a super-state-machine:
-  #         you register message handlers not only for a peer but
-  #         also for a particualar peer state - this would allow
-  #         us to create states for the peer (pre-auth, hello,
-  #         regular-comms, tear-down), keeping it clear which
-  #         messages are handled in which states, for example when
-  #         auditing the implementation - this could probably be
-  #         the same state enum as ConnectionState - it doesn't really
-  #         matter if we're disconnected or connected-but-authenticating,
-  #         we still won't handle most messages..
-  #         another thing to consider once you get into request-
-  #         response is that you also have to handle the usual
-  #         suspects of async messaging: timeouts, arrivals of
-  #         response after the timeout, etc
   const wantedId = MsgType.msgId
 
   while true:

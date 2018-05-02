@@ -195,8 +195,6 @@ proc decryptHeader*(c: var SecretState, data: openarray[byte],
 proc decryptHeaderAndGetMsgSize*(c: var SecretState,
                                  encryptedHeader: openarray[byte],
                                  outSize: var int): RlpxStatus =
-# REVIEW: so this is the poster-boy example for a result type which
-#         would make both this and the calling code much more digestible
   var decryptedHeader: RlpxHeader
   result = decryptHeader(c, encryptedHeader, decryptedHeader)
   if result == Success:
