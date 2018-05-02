@@ -61,6 +61,11 @@ proc newNode*(uriString: string): Node =
   result.node = initENode(uriString)
   result.id = result.node.pubkey.toNodeId()
 
+proc newNode*(enode: ENode): Node =
+  result.new()
+  result.node = enode
+  result.id = result.node.pubkey.toNodeId()
+
 proc distanceTo(n: Node, id: NodeId): UInt256 = n.id xor id
 
 proc `$`*(n: Node): string =
