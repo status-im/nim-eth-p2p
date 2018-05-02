@@ -162,7 +162,7 @@ proc sendNeighbours*(d: DiscoveryProtocol, node: Node, neighbours: seq[Node]) =
 
   if nodes.len != 0: flush()
 
-proc newDiscoveryProtocol*(privKey: PrivateKey, address: Address, bootstrapNodes: openarray[string]): DiscoveryProtocol =
+proc newDiscoveryProtocol*(privKey: PrivateKey, address: Address, bootstrapNodes: openarray[ENode]): DiscoveryProtocol =
   result.new()
   result.privKey = privKey
   result.address = address
@@ -312,12 +312,16 @@ when isMainModule:
   #   let (remotePubkey, cmdId, payload) = unpack(m)
   #   assert(remotePubkey.raw_key.toHex == privKey.public_key.raw_key.toHex)
 
+  var bootnodes = newSeq[ENode]()
+  for item in LOCAL_BOOTNODES:
+    bootnodes.add(initENode(item))
+
   let listenPort = Port(30310)
   var address = Address(udpPort: listenPort, tcpPort: listenPort)
   address.ip.family = IpAddressFamily.IPv4
-  let discovery = newDiscoveryProtocol(privkey, address, LOCAL_BOOTNODES)
+  let discovery = newDiscoveryProtocol(privkey, address, bootnodes)
 
-  echo discovery.thisNode.pubkey
+  echo discovery.thisNode.node.pubkey
   echo "this_node.id: ", discovery.thisNode.id.toHex()
 
   discovery.open()
