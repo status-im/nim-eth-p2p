@@ -514,7 +514,7 @@ import typetraits
 proc rlpxConnect*(myKeys: KeyPair, remote: Node): Future[Peer] {.async.} =
   # TODO: Make sure to close the socket in case of exception
   result.socket = newAsyncSocket()
-  await result.socket.connect($remote.address.ip, remote.address.tcpPort)
+  await result.socket.connect($remote.node.address.ip, remote.node.address.tcpPort)
 
   const encryptionEnabled = true
 
@@ -534,7 +534,7 @@ proc rlpxConnect*(myKeys: KeyPair, remote: Node): Future[Peer] {.async.} =
 
   var authMsg: array[AuthMessageMaxEIP8, byte]
   var authMsgLen = 0
-  check authMessage(handshake, remote.pubkey, authMsg, authMsgLen,
+  check authMessage(handshake, remote.node.pubkey, authMsg, authMsgLen,
                     encrypt = encryptionEnabled)
 
   await result.socket.send(addr authMsg[0], authMsgLen)
