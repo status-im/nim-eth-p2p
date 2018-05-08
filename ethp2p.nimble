@@ -16,15 +16,7 @@ requires "nim > 0.18.0",
          "https://github.com/status-im/nim-stint",
          "https://github.com/status-im/nim-byteutils"
 
-proc runTest(name: string, lang = "c") =
-  if not dirExists "build":
-    mkDir "build"
-  if not dirExists "nimcache":
-    mkDir "nimcache"
-  --run
-  --nimcache: "nimcache"
-  switch("out", ("./build/" & name))
-  exec "nim " & lang & " -r tests/" & name
+proc runTest(name: string, lang = "c") = exec "nim " & lang & " -r tests/" & name
 
 task test, "Runs the test suite":
   runTest "testecies"
