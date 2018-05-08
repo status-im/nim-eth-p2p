@@ -24,7 +24,7 @@ proc runTest(name: string, lang = "c") =
   --run
   --nimcache: "nimcache"
   switch("out", ("./build/" & name))
-  setCommand lang, "tests/" & name & ".nim"
+  exec "nim " & lang & " -r tests/" & name
 
 task test, "Runs the test suite":
   runTest "testecies"
