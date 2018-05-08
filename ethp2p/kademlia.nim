@@ -25,7 +25,7 @@ type
     pingFutures: Table[Node, Future[bool]]
     neighboursCallbacks: Table[Node, proc(n: seq[Node])]
 
-  NodeId* = UInt256 # This is probably too small...
+  NodeId* = UInt256
 
   Node* = ref object
     node*: ENode
