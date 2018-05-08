@@ -11,7 +11,7 @@
 from strutils import nil
 import asyncnet, asyncdispatch, net, times, nativesockets, algorithm, logging
 import kademlia, enode
-import eth_keys, rlp, ranges, ttmath, nimcrypto
+import eth_keys, rlp, ranges, stint, nimcrypto
 
 export Node
 

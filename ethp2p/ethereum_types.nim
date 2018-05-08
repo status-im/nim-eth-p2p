@@ -9,7 +9,7 @@
 #
 
 import
-  rlp/types, nimcrypto/hash, ttmath
+  rlp/types, nimcrypto/hash, stint
 
 export
   MDigest

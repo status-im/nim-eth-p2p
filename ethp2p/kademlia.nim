@@ -14,7 +14,7 @@ from strutils import parseInt
 
 export sets # TODO: This should not be needed, but compilation fails otherwise
 
-import eth_keys, ttmath, nimcrypto, enode
+import eth_keys, stint, nimcrypto, enode
 
 type
   KademliaProtocol* [Wire] = ref object
@@ -156,11 +156,11 @@ proc computeSharedPrefixBits(nodes: openarray[Node]): int =
   if nodes.len < 2:
     return ID_SIZE
 
-  var mask, one: UInt256
-  mask.setZero()
-  one.setOne()
+  var mask = zero(UInt256)
+  let one = one(UInt256)
+
   for i in 1 .. ID_SIZE:
-    mask |= one shl uint64(ID_SIZE - i)
+    mask = mask or (one shl (ID_SIZE - i))
     let reference = nodes[0].id and mask
     for j in 1 .. nodes.high:
       if (nodes[j].id and mask) != reference: return i - 1
@@ -169,9 +169,7 @@ proc computeSharedPrefixBits(nodes: openarray[Node]): int =
 
 proc init(r: var RoutingTable, thisNode: Node) {.inline.} =
   r.thisNode = thisNode
-  var maxId: NodeId
-  maxId.setMax()
-  r.buckets = @[newKBucket(0.u256, maxId)]
+  r.buckets = @[newKBucket(0.u256, high(Uint256))]
 
 proc splitBucket(r: var RoutingTable, index: int) =
   let bucket = r.buckets[index]
@@ -394,7 +392,7 @@ proc lookup*(k: KademliaProtocol, nodeId: NodeId): Future[seq[Node]] {.async.} =
 
 proc lookupRandom*(k: KademliaProtocol): Future[seq[Node]] =
   var id: NodeId
-  discard randomBytes(addr id.table[0], sizeof(id.table))
+  discard randomBytes(addr id.table[0], sizeof(id.table)) ## TODO What is supposed to happen here?
   k.lookup(id)
 
 proc resolve*(k: KademliaProtocol, id: NodeId): Future[Node] {.async.} =
