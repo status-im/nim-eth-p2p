@@ -387,12 +387,12 @@ proc lookup*(k: KademliaProtocol, nodeId: NodeId): Future[seq[Node]] {.async.} =
     sortByDistance(closest, nodeId, BUCKET_SIZE)
     nodesToAsk = excludeIfAsked(closest)
 
-  info "lookup finished for ", nodeId.toHex(), ": ", closest
+  info "lookup finished for ", nodeId.toHex, ": ", closest
   result = closest
 
 proc lookupRandom*(k: KademliaProtocol): Future[seq[Node]] =
   var id: NodeId
-  discard randomBytes(addr id.table[0], sizeof(id.table)) ## TODO What is supposed to happen here?
+  discard randomBytes(addr id, id.sizeof)
   k.lookup(id)
 
 proc resolve*(k: KademliaProtocol, id: NodeId): Future[Node] {.async.} =
