@@ -46,7 +46,7 @@ type
     privKey: PrivateKey
     address: Address
     bootstrapNodes*: seq[Node]
-    thisNode: Node
+    thisNode*: Node
     kademlia: KademliaProtocol[DiscoveryProtocol]
     socket: AsyncSocket
 
@@ -134,7 +134,8 @@ proc sendPong*(d: DiscoveryProtocol, n: Node, token: MDigest[256]) =
   d.send(n, msg)
 
 proc sendFindNode*(d: DiscoveryProtocol, n: Node, targetNodeId: NodeId) =
-  var data = newSeq[byte](32) & @(targetNodeId.toByteArrayBE())
+  var data: array[64, byte]
+  data[32 .. ^1] = targetNodeId.toByteArrayBE()
   let payload = rlp.encode((data, expiration()))
   let msg = pack(cmdFindNode, payload, d.privKey)
   debug ">>> find_node to ", n#, ": ", msg.toHex()
@@ -214,7 +215,7 @@ proc recvFindNode(d: DiscoveryProtocol, node: Node, payload: Bytes) {.inline.} =
   let rlp = rlpFromBytes(payload.toRange)
   debug "<<< find_node from ", node
   let rng = rlp.listElem(0).toBytes
-  let nodeId = readUIntBE[256](rng.toOpenArray())
+  let nodeId = readUIntBE[256](rng[32 .. ^1].toOpenArray())
   d.kademlia.recvFindNode(node, nodeId)
 
 proc expirationValid(rlpEncodedPayload: seq[byte]): bool {.inline.} =
