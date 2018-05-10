@@ -21,6 +21,7 @@ type
     lastLookupTime: float
     connectedNodes: Table[Node, Peer]
     running: bool
+    listenPort*: Port
 
   AsyncChainDb* = ref object # TODO: This should be defined elsewhere
 
@@ -40,6 +41,7 @@ proc newPeerPool*(chainDb: AsyncChainDb, networkId: int, keyPair: KeyPair,
   result.networkId = networkId
   result.discovery = discovery
   result.connectedNodes = initTable[Node, Peer]()
+  result.listenPort = Port(30303)
 
 template ensureFuture(f: untyped) = asyncCheck f
 
@@ -72,7 +74,7 @@ proc connect(p: PeerPool, remote: Node): Future[Peer] {.async.} =
     debug "Skipping ", remote, "; already connected to it"
     return nil
 
-  result = await rlpxConnect(p.keyPair, remote)
+  result = await rlpxConnect(p.keyPair, p.listenPort, remote)
 
   # expected_exceptions = (
   #   UnreachablePeer, TimeoutError, PeerConnectionLost, HandshakeFailure)

@@ -133,10 +133,10 @@ proc encrypt*(c: var SecretState, header: openarray[byte],
   copyMem(addr output[frameMacPos], addr frameMac.data[0], RlpHeaderLength)
   result = Success
 
-template encryptMsg*(msg: BytesRange, secrets: SecretState): auto =
+proc encryptMsg*(msg: BytesRange, secrets: var SecretState): seq[byte] =
   var header: RlpxHeader
 
-  if uint32(data.len) > maxUInt24:
+  if uint32(msg.len) > maxUInt24:
     raise newException(OverflowError, "RLPx message size exceeds limit")
 
   # write the frame size in the first 3 bytes of the header
@@ -146,11 +146,9 @@ template encryptMsg*(msg: BytesRange, secrets: SecretState): auto =
 
   # XXX:
   # This would be safer if we use a thread-local sequ for the temporary buffer
-  var outCipherText = allocStackArray(byte, encryptedLength(msg.len))
-  let s = encrypt(secrets, header, msg.toOpenArray, outCipherText.toOpenArray)
+  result = newSeq[byte](encryptedLength(msg.len))
+  let s = encrypt(secrets, header, msg.toOpenArray, result)
   assert s == Success
-
-  outCipherText
 
 proc getBodySize*(a: RlpxHeader): int =
   (int(a[0]) shl 16) or (int(a[1]) shl 8) or int(a[2])

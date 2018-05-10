@@ -16,7 +16,7 @@ proc test() {.async.} =
   await sleepAsync(500)
 
   let n = newNode(initENode(kp.pubKey, address))
-  let peer = await rlpxConnect(newKeyPair(), n)
+  let peer = await rlpxConnect(newKeyPair(), Port(1234), n)
 
   doAssert(not peer.isNil)
 

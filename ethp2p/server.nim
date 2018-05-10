@@ -1,4 +1,4 @@
-import peer_pool, discovery, enode, async, asyncnet, auth, rlpx
+import peer_pool, discovery, enode, async, asyncnet, auth, rlpx, net
 import eth_keys
 
 type Server* = ref object
@@ -24,7 +24,7 @@ proc newServer*(keyPair: KeyPair, address: Address, chainDb: AsyncChainDB,
 proc isRunning(s: Server): bool {.inline.} = not s.socket.isNil
 
 proc receiveHandshake(s: Server, address: string, remote: AsyncSocket) {.async.} =
-  let p = await rlpxConnectIncoming(s.keyPair, remote)
+  let p = await rlpxConnectIncoming(s.keyPair, s.address.tcpPort, parseIpAddress(address), remote)
   if not p.isNil:
     echo "TODO: Add peer to the pool..."
   else:
