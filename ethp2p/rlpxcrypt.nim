@@ -136,7 +136,7 @@ proc encrypt*(c: var SecretState, header: openarray[byte],
 template encryptMsg*(msg: BytesRange, secrets: SecretState): auto =
   var header: RlpxHeader
 
-  if data.len > int(maxUInt24):
+  if uint32(data.len) > maxUInt24:
     raise newException(OverflowError, "RLPx message size exceeds limit")
 
   # write the frame size in the first 3 bytes of the header
@@ -207,7 +207,7 @@ proc decryptBody*(c: var SecretState, data: openarray[byte], bodysize: int,
   ##
   ## `data` must be at least `roundup16(bodysize) + RlpMacLength` length.
   ## `output` must be at least `roundup16(bodysize)` length.
-  ## 
+  ##
   ## On success completion `outlen` will hold actual size of decrypted body.
   var
     tmpmac: keccak256

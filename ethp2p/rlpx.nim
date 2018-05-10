@@ -9,7 +9,7 @@
 #
 
 import
-  macros, sets, algorithm, async, asyncnet, asyncfutures,
+  macros, sets, algorithm, async, asyncnet, asyncfutures, net,
   hashes, rlp, ranges/[stackarrays, ptr_arith], eth_keys,
   ethereum_types, kademlia, discovery, auth, rlpxcrypt
 
@@ -513,6 +513,7 @@ import typetraits
 
 proc rlpxConnect*(myKeys: KeyPair, remote: Node): Future[Peer] {.async.} =
   # TODO: Make sure to close the socket in case of exception
+  result.new()
   result.socket = newAsyncSocket()
   await result.socket.connect($remote.node.address.ip, remote.node.address.tcpPort)
 
@@ -529,8 +530,7 @@ proc rlpxConnect*(myKeys: KeyPair, remote: Node): Future[Peer] {.async.} =
     arr.toOpenArray(0, `arr Len` - 1)
 
   var handshake = newHandshake({Initiator})
-  handshake.host.seckey = myKeys.seckey
-  handshake.host.pubkey = myKeys.pubKey
+  handshake.host = myKeys
 
   var authMsg: array[AuthMessageMaxEIP8, byte]
   var authMsgLen = 0
@@ -556,13 +556,69 @@ proc rlpxConnect*(myKeys: KeyPair, remote: Node): Future[Peer] {.async.} =
   discard hello(result, baseProtocolVersion, clienId,
                 gCapabilities, listeningPort, nodeId)
 
+  echo "wait hello from outgoing"
   var response = await result.nextMsg(p2p.hello, discardOthers = true)
+  echo "received hello from outgoing"
+
   result.dispatcher = getDispatcher(response.capabilities)
   result.id = response.nodeId
   result.connectionState = Connected
   result.remote = remote
   newSeq(result.protocolStates, gProtocols.len)
   # XXX: initialize the sub-protocol states
+
+proc rlpxConnectIncoming*(myKeys: KeyPair, s: AsyncSocket): Future[Peer] {.async.} =
+  result.new()
+  result.socket = s
+  var handshake = newHandshake({Responder})
+  handshake.host = myKeys
+
+  var authMsg: array[1024, byte]
+  echo "Reading..."
+  let authMsgLen = await s.recvInto(addr authMsg[0], 307)
+  echo "Read: ", authMsgLen
+  echo "Decode: ", handshake.decodeAuthMessage(authMsg.toOpenArray(0, authMsgLen - 1))
+
+  template check(body: untyped) =
+    let c = body
+    if c != AuthStatus.Success:
+      raise newException(Exception, "Error: " & $c)
+
+  var ackMsg: array[AckMessageMaxEIP8, byte]
+  var ackMsgLen: int
+  check handshake.ackMessage(ackMsg, ackMsgLen)
+
+  await s.send(addr ackMsg[0], ackMsgLen)
+
+  template `^`(arr): auto =
+    # passes a stack array with a matching `arrLen`
+    # variable as an open array
+    arr.toOpenArray(0, `arr Len` - 1)
+
+  var secrets: ConnectionSecret
+  check handshake.getSecrets(^authMsg, ^ackMsg, secrets)
+  initSecretState(secrets, result.secretsState)
+
+  var
+    # XXX: TODO: get these from somewhere
+    nodeId: P2PNodeId
+    listeningPort = uint 0
+
+  discard hello(result, baseProtocolVersion, clienId,
+                gCapabilities, listeningPort, nodeId)
+
+  echo "wait hello from incoming"
+  var response = await result.nextMsg(p2p.hello, discardOthers = true)
+  echo "received hello from incoming"
+
+  result.dispatcher = getDispatcher(response.capabilities)
+  result.id = response.nodeId
+
+  echo response.nodeId
+
+  result.connectionState = Connected
+  result.remote = nil
+  newSeq(result.protocolStates, gProtocols.len)
 
 when isMainModule:
   import rlp
