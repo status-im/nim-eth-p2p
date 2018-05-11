@@ -215,7 +215,7 @@ proc dispatchMsg(peer: Peer, msgId: int, msgData: var Rlp) =
 proc send(p: Peer, data: BytesRange) {.async.} =
   var cipherText = encryptMsg(data, p.secretsState)
   GC_ref(cipherText)
-  result = p.socket.send(addr cipherText[0], cipherText.len)
+  await p.socket.send(addr cipherText[0], cipherText.len)
   GC_unref(cipherText)
 
 proc fullRecvInto(s: AsyncSocket, buffer: pointer, bufferLen: int) {.async.} =
