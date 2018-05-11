@@ -525,6 +525,12 @@ proc connectionEstablished(p: Peer, h: p2p.hello) =
   newSeq(p.protocolStates, gProtocols.len)
   # XXX: initialize the sub-protocol states
 
+proc initSecretState(hs: var Handshake, authMsg, ackMsg: openarray[byte], p: Peer) =
+  var secrets: ConnectionSecret
+  check hs.getSecrets(authMsg, ackMsg, secrets)
+  initSecretState(secrets, p.secretsState)
+  burnMem(secrets)
+
 proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer] {.async.} =
   # TODO: Make sure to close the socket in case of exception
   new result
@@ -549,9 +555,7 @@ proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer]
   await result.socket.fullRecvInto(addr ackMsg, ackMsgLen)
 
   check handshake.decodeAckMessage(^ackMsg)
-  var secrets: ConnectionSecret
-  check handshake.getSecrets(^authMsg, ^ackMsg, secrets)
-  initSecretState(secrets, result.secretsState)
+  initSecretState(handshake, ^authMsg, ^ackMsg, result)
 
   if handshake.remoteHPubkey != remote.node.pubKey:
     raise newException(Exception, "Remote pubkey is wrong")
@@ -583,10 +587,7 @@ proc rlpxConnectIncoming*(myKeys: KeyPair, listenPort: Port, address: IpAddress,
   check handshake.ackMessage(ackMsg, ackMsgLen)
 
   await s.send(addr ackMsg[0], ackMsgLen)
-
-  var secrets: ConnectionSecret
-  check handshake.getSecrets(^authMsg, ^ackMsg, secrets)
-  initSecretState(secrets, result.secretsState)
+  initSecretState(handshake, ^authMsg, ^ackMsg, result)
 
   var response = await result.nextMsg(p2p.hello, discardOthers = true)
   discard result.hello(baseProtocolVersion, clienId,
