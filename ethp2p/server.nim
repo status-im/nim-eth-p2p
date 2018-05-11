@@ -31,6 +31,7 @@ proc receiveHandshake(s: Server, address: string, remote: AsyncSocket) {.async.}
     echo "Could not establish connection with incoming peer"
 
 proc run(s: Server) {.async.} =
+  # TODO: Add error handling
   s.socket = newAsyncSocket()
   s.socket.setSockOpt(OptReuseAddr, true)
   s.socket.bindAddr(s.address.tcpPort)
@@ -38,11 +39,11 @@ proc run(s: Server) {.async.} =
 
   while s.isRunning:
     let (address, client) = await s.socket.acceptAddr()
-    asyncCheck s.receiveHandshake(address, client)
+    discard s.receiveHandshake(address, client)
 
 proc start*(s: Server) =
   if not s.isRunning:
-    asyncCheck s.run()
+    discard s.run()
 
 proc stop*(s: Server) =
   if s.isRunning:
