@@ -23,7 +23,7 @@ type
     IncompleteENode       ## Incomplete ENODE object
 
   Address* = object
-    ## Network address object 
+    ## Network address object
     ip*: IpAddress        ## IPv4/IPv6 address
     udpPort*: Port        ## UDP discovery port number
     tcpPort*: Port        ## TCP port number
@@ -125,23 +125,13 @@ proc initENode*(uri: string): ENode {.inline.} =
   if res != Success:
     raiseENodeError(res)
 
-proc initENode*(pubkey: PublicKey, address: Address): ENode =
+proc initENode*(pubkey: PublicKey, address: Address): ENode {.inline.} =
   ## Create ENode object from public key ``pubkey`` and ``address``.
   result.pubkey = pubkey
-  if address.tcpPort == Port(0):
-    raiseENodeError(IncorrectPort)
-  if address.udpPort == Port(0):
-    raiseENodeError(IncorrectDiscPort)
   result.address = address
 
 proc isCorrect*(n: ENode): bool =
   ## Returns ``true`` if ENode ``n`` is properly filled.
-  if n.address.ip.family notin {IpAddressFamily.IPv4, IpAddressFamily.IPv6}:
-    return false
-  if n.address.tcpPort == Port(0):
-    return false
-  if n.address.udpPort == Port(0):
-    return false
   result = false
   for i in n.pubkey.data:
     if i != 0x00'u8:
@@ -162,8 +152,9 @@ proc `$`*(n: ENode): string =
   result.add($n.pubkey)
   result.add("@")
   result.add(ipaddr)
-  result.add(":")
-  result.add($int(n.address.tcpPort))
+  if uint16(n.address.tcpPort) != 0:
+    result.add(":")
+    result.add($int(n.address.tcpPort))
   if uint16(n.address.udpPort) != uint16(n.address.tcpPort):
     result.add("?")
     result.add("discport=")

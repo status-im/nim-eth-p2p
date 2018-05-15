@@ -9,11 +9,11 @@ skipDirs      = @["tests", "Nim"]
 
 requires "nim > 0.18.0",
          "rlp >= 1.0.1",
-         "https://github.com/cheatfate/nimcrypto",
+         "nimcrypto",
          "secp256k1 >= 0.1.0",
          "eth_keys",
          "ranges",
-         "https://github.com/status-im/nim-stint",
+         "stint",
          "https://github.com/status-im/nim-byteutils"
 
 proc runTest(name: string, lang = "c") = exec "nim " & lang & " -r tests/" & name
@@ -24,3 +24,4 @@ task test, "Runs the test suite":
   runTest "testcrypt"
   runTest "testenode"
   runTest "tdiscovery"
+  runTest "tserver"
