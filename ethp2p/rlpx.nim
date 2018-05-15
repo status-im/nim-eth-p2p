@@ -358,7 +358,6 @@ macro rlpxProtocol*(protoIdentifier: untyped,
         error("The only type that can be defined inside a RLPx protocol is the protocol's State type.")
 
     of nnkProcDef:
-      inc nextId
       let
         msgIdent = n.name.ident
         msgName = $msgIdent
@@ -464,6 +463,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
                          newStrLitNode($n.name),
                          thunkName)
 
+      inc nextId
     else:
       error("illegal syntax in a RLPx protocol definition", n)
 
@@ -574,11 +574,20 @@ proc rlpxConnectIncoming*(myKeys: KeyPair, listenPort: Port, address: IpAddress,
   var handshake = newHandshake({Responder})
   handshake.host = myKeys
 
-  var authMsg: array[1024, byte]
+  var authMsg: array[4086, byte]
   var authMsgLen = AuthMessageV4Length
-  # TODO: Handle both auth methods
+
   await s.fullRecvInto(addr authMsg[0], authMsgLen)
-  check handshake.decodeAuthMessage(^authMsg)
+  var ret = handshake.decodeAuthMessage(^authMsg)
+  if ret == AuthStatus.IncompleteError: # Eip8 auth message is likely
+    let expectedLen = expectedAuthMsgLenEip8(authMsg).int + 2
+    if expectedLen > authMsg.len:
+      raise newException(Exception, "Auth message too big: " & $authMsgLen)
+    await s.fullRecvInto(addr authMsg[authMsgLen], expectedLen - authMsgLen)
+    authMsgLen = expectedLen
+    ret = handshake.decodeAuthMessage(^authMsg)
+
+  check ret
 
   var ackMsg: array[AckMessageMaxEIP8, byte]
   var ackMsgLen: int
