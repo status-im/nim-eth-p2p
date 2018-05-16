@@ -539,12 +539,14 @@ proc initSecretState(hs: var Handshake, authMsg, ackMsg: openarray[byte], p: Pee
   initSecretState(secrets, p.secretsState)
   burnMem(secrets)
 
-proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer] {.async.} =
+proc rlpxConnect*(myKeys: KeyPair, listenPort: Port,
+                  remote: Node): Future[Peer] {.async.} =
   # TODO: Make sure to close the socket in case of exception
   new result
   result.socket = newAsyncSocket()
   result.remote = remote
-  await result.socket.connect($remote.node.address.ip, remote.node.address.tcpPort)
+  await result.socket.connect($remote.node.address.ip,
+                              remote.node.address.tcpPort)
 
   var handshake = newHandshake({Initiator})
   handshake.host = myKeys
@@ -555,11 +557,17 @@ proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer]
 
   await result.socket.send(addr authMsg[0], authMsgLen)
 
-  var ackMsg: array[AckMessageMaxEIP8, byte]
-  let ackMsgLen = handshake.ackSize()
-  await result.socket.fullRecvInto(addr ackMsg, ackMsgLen)
+  var ackMsg = newSeqOfCap[byte](1024)
+  ackMsg.setLen(handshake.expectedLength)
+  await result.socket.fullRecvInto(ackMsg)
+  var ret = handshake.decodeAckMessage(ackMsg)
+  if ret == AuthStatus.IncompleteError:
+    ackMsg.setLen(handshake.expectedLength)
+    await result.socket.fullRecvInto(addr ackMsg[AckMessageV4Length],
+                                     ackMsg.len - AckMessageV4Length)
+    ret = handshake.decodeAckMessage(ackMsg)
+  check ret
 
-  check handshake.decodeAckMessage(^ackMsg)
   initSecretState(handshake, ^authMsg, ^ackMsg, result)
 
   if handshake.remoteHPubkey != remote.node.pubKey:
@@ -575,20 +583,22 @@ proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer]
 
   connectionEstablished(result, response)
 
-proc rlpxConnectIncoming*(myKeys: KeyPair, listenPort: Port, address: IpAddress, s: AsyncSocket): Future[Peer] {.async.} =
+proc rlpxConnectIncoming*(myKeys: KeyPair, listenPort: Port, address: IpAddress,
+                          s: AsyncSocket): Future[Peer] {.async.} =
   new result
   result.socket = s
   var handshake = newHandshake({Responder})
   handshake.host = myKeys
 
   var authMsg = newSeqOfCap[byte](1024)
-  authMsg.setLen(AuthMessageV4Length)
+  authMsg.setLen(handshake.expectedLength)
 
   await s.fullRecvInto(authMsg)
   var ret = handshake.decodeAuthMessage(authMsg)
   if ret == AuthStatus.IncompleteError: # Eip8 auth message is likely
-    authMsg.setLen(expectedAuthMsgLenEip8(authMsg).int + 2)
-    await s.fullRecvInto(addr authMsg[AuthMessageV4Length], authMsg.len - AuthMessageV4Length)
+    authMsg.setLen(handshake.expectedLength)
+    await s.fullRecvInto(addr authMsg[AuthMessageV4Length],
+                         authMsg.len - AuthMessageV4Length)
     ret = handshake.decodeAuthMessage(authMsg)
 
   check ret
