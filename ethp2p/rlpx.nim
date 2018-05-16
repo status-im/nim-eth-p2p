@@ -223,8 +223,11 @@ proc fullRecvInto(s: AsyncSocket, buffer: pointer, bufferLen: int) {.async.} =
   # XXX: This should be a library function
   var receivedBytes = 0
   while receivedBytes < bufferLen:
-    receivedBytes += await s.recvInto(buffer.shift(receivedBytes),
-                                      bufferLen - receivedBytes)
+    let sz = await s.recvInto(buffer.shift(receivedBytes),
+                              bufferLen - receivedBytes)
+    if sz == 0:
+      raise newException(IOError, "Socket disconnected")
+    receivedBytes += sz
 
 template fullRecvInto(s: AsyncSocket, buff: var openarray[byte]): auto =
   fullRecvInto(s, addr buff[0], buff.len)
