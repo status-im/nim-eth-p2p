@@ -334,14 +334,16 @@ proc decodeAuthMessageV4(h: var Handshake, m: openarray[byte]): AuthStatus =
   h.remoteHPubkey = pubkey
   result = Success
 
+proc expectedAuthMsgLenEip8*(input: openarray[byte]): uint16 {.inline.} =
+  bigEndian16(addr result, unsafeAddr input[0])
+
 proc decodeAuthMessageEip8(h: var Handshake, m: openarray[byte]): AuthStatus =
   ## Decodes EIP-8 AuthMessage.
   var
     pubkey: PublicKey
     nonce: Nonce
-    size: uint16
     secret: SharedSecret
-  bigEndian16(addr size, unsafeAddr m[0])
+  let size = expectedAuthMsgLenEip8(m)
   if 2 + int(size) > len(m):
     return(IncompleteError)
   var buffer = newSeq[byte](eciesDecryptedLength(int(size)))
@@ -434,9 +436,10 @@ proc decodeAuthMessage*(h: var Handshake, input: openarray[byte]): AuthStatus =
   if len(input) < AuthMessageV4Length:
     result = IncompleteError
   elif len(input) == AuthMessageV4Length:
-    let res = h.decodeAuthMessageV4(input)
+    var res = h.decodeAuthMessageV4(input)
     if res != Success:
-      if h.decodeAuthMessageEip8(input) != Success:
+      res = h.decodeAuthMessageEip8(input)
+      if res != Success:
         result = res
       else:
         h.flags.incl(EIP8)

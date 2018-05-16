@@ -213,6 +213,9 @@ proc dispatchMsg(peer: Peer, msgId: int, msgData: var Rlp) =
   thunk(peer, msgData)
 
 proc send(p: Peer, data: BytesRange) {.async.} =
+  # var rlp = rlpFromBytes(data)
+  # echo "sending: ", rlp.read(int)
+  # echo "payload: ", rlp.inspect
   var cipherText = encryptMsg(data, p.secretsState)
   await p.socket.send(addr cipherText[0], cipherText.len)
 
@@ -220,8 +223,11 @@ proc fullRecvInto(s: AsyncSocket, buffer: pointer, bufferLen: int) {.async.} =
   # XXX: This should be a library function
   var receivedBytes = 0
   while receivedBytes < bufferLen:
-    receivedBytes += await s.recvInto(buffer.shift(receivedBytes),
-                                      bufferLen - receivedBytes)
+    let sz = await s.recvInto(buffer.shift(receivedBytes),
+                              bufferLen - receivedBytes)
+    if sz == 0:
+      raise newException(IOError, "Socket disconnected")
+    receivedBytes += sz
 
 template fullRecvInto(s: AsyncSocket, buff: var openarray[byte]): auto =
   fullRecvInto(s, addr buff[0], buff.len)
@@ -358,7 +364,6 @@ macro rlpxProtocol*(protoIdentifier: untyped,
         error("The only type that can be defined inside a RLPx protocol is the protocol's State type.")
 
     of nnkProcDef:
-      inc nextId
       let
         msgIdent = n.name.ident
         msgName = $msgIdent
@@ -420,8 +425,10 @@ macro rlpxProtocol*(protoIdentifier: untyped,
           newEmptyNode(),
           msgTypeFields)
 
+      var paramCount = 0
       # implement sending proc
       for param, paramType in n.typedParams(skip = 1):
+        inc paramCount
         appendParams.add quote do:
           `append`(`rlpWriter`, `param`)
 
@@ -451,9 +458,11 @@ macro rlpxProtocol*(protoIdentifier: untyped,
       else:
         quote: `append`(`rlpWriter`, `nextId`)
 
+      let paramCountNode = newLit(paramCount)
       n.body = quote do:
         var `rlpWriter` = `initRlpWriter`()
         `writeMsgId`
+        `rlpWriter`.startList(`paramCountNode`)
         `appendParams`
         return `send`(`peer`, `finish`(`rlpWriter`))
 
@@ -464,6 +473,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
                          newStrLitNode($n.name),
                          thunkName)
 
+      inc nextId
     else:
       error("illegal syntax in a RLPx protocol definition", n)
 
@@ -536,20 +546,17 @@ proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer]
   result.remote = remote
   await result.socket.connect($remote.node.address.ip, remote.node.address.tcpPort)
 
-  const encryptionEnabled = true
-
   var handshake = newHandshake({Initiator})
   handshake.host = myKeys
 
   var authMsg: array[AuthMessageMaxEIP8, byte]
   var authMsgLen = 0
-  check authMessage(handshake, remote.node.pubkey, authMsg, authMsgLen,
-                    encrypt = encryptionEnabled)
+  check authMessage(handshake, remote.node.pubkey, authMsg, authMsgLen)
 
   await result.socket.send(addr authMsg[0], authMsgLen)
 
   var ackMsg: array[AckMessageMaxEIP8, byte]
-  let ackMsgLen = handshake.ackSize(encrypt = encryptionEnabled)
+  let ackMsgLen = handshake.ackSize()
   await result.socket.fullRecvInto(addr ackMsg, ackMsgLen)
 
   check handshake.decodeAckMessage(^ackMsg)
@@ -574,18 +581,24 @@ proc rlpxConnectIncoming*(myKeys: KeyPair, listenPort: Port, address: IpAddress,
   var handshake = newHandshake({Responder})
   handshake.host = myKeys
 
-  var authMsg: array[1024, byte]
-  var authMsgLen = AuthMessageV4Length
-  # TODO: Handle both auth methods
-  await s.fullRecvInto(addr authMsg[0], authMsgLen)
-  check handshake.decodeAuthMessage(^authMsg)
+  var authMsg = newSeqOfCap[byte](1024)
+  authMsg.setLen(AuthMessageV4Length)
+
+  await s.fullRecvInto(authMsg)
+  var ret = handshake.decodeAuthMessage(authMsg)
+  if ret == AuthStatus.IncompleteError: # Eip8 auth message is likely
+    authMsg.setLen(expectedAuthMsgLenEip8(authMsg).int + 2)
+    await s.fullRecvInto(addr authMsg[AuthMessageV4Length], authMsg.len - AuthMessageV4Length)
+    ret = handshake.decodeAuthMessage(authMsg)
+
+  check ret
 
   var ackMsg: array[AckMessageMaxEIP8, byte]
   var ackMsgLen: int
   check handshake.ackMessage(ackMsg, ackMsgLen)
 
   await s.send(addr ackMsg[0], ackMsgLen)
-  initSecretState(handshake, ^authMsg, ^ackMsg, result)
+  initSecretState(handshake, authMsg, ^ackMsg, result)
 
   var response = await result.nextMsg(p2p.hello, discardOthers = true)
   discard result.hello(baseProtocolVersion, clienId,
