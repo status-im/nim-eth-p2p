@@ -8,7 +8,7 @@
 #
 
 import unittest
-import eth_keys, ethp2p/auth, ethp2p/rlpxcrypt, nimcrypto/utils, ethp2p/hexdump
+import eth_keys, ethp2p/auth, ethp2p/rlpxcrypt, nimcrypto/utils
 import nimcrypto/sysrand, nimcrypto/keccak
 
 const data = [
