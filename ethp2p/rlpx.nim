@@ -552,15 +552,21 @@ proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer]
   var authMsg: array[AuthMessageMaxEIP8, byte]
   var authMsgLen = 0
   check authMessage(handshake, remote.node.pubkey, authMsg, authMsgLen)
-
   await result.socket.send(addr authMsg[0], authMsgLen)
 
-  var ackMsg: array[AckMessageMaxEIP8, byte]
-  let ackMsgLen = handshake.ackSize()
-  await result.socket.fullRecvInto(addr ackMsg, ackMsgLen)
+  let initialSize = handshake.expectedLength
+  var ackMsg = newSeqOfCap[byte](1024)
+  ackMsg.setLen(initialSize)
+  await result.socket.fullRecvInto(ackMsg)
+  var ret = handshake.decodeAckMessage(ackMsg)
+  if ret == AuthStatus.IncompleteError:
+    ackMsg.setLen(handshake.expectedLength)
+    await result.socket.fullRecvInto(addr ackMsg[initialSize],
+                                     len(ackMsg) - initialSize)
+    ret = handshake.decodeAckMessage(ackMsg)
+  check ret
 
-  check handshake.decodeAckMessage(^ackMsg)
-  initSecretState(handshake, ^authMsg, ^ackMsg, result)
+  initSecretState(handshake, ^authMsg, ackMsg, result)
 
   if handshake.remoteHPubkey != remote.node.pubKey:
     raise newException(Exception, "Remote pubkey is wrong")
@@ -581,23 +587,22 @@ proc rlpxConnectIncoming*(myKeys: KeyPair, listenPort: Port, address: IpAddress,
   var handshake = newHandshake({Responder})
   handshake.host = myKeys
 
+  let initialSize = handshake.expectedLength
   var authMsg = newSeqOfCap[byte](1024)
-  authMsg.setLen(AuthMessageV4Length)
-
+  authMsg.setLen(initialSize)
   await s.fullRecvInto(authMsg)
   var ret = handshake.decodeAuthMessage(authMsg)
   if ret == AuthStatus.IncompleteError: # Eip8 auth message is likely
-    authMsg.setLen(expectedAuthMsgLenEip8(authMsg).int + 2)
-    await s.fullRecvInto(addr authMsg[AuthMessageV4Length], authMsg.len - AuthMessageV4Length)
+    authMsg.setLen(handshake.expectedLength)
+    await s.fullRecvInto(addr authMsg[initialSize], len(authMsg) - initialSize)
     ret = handshake.decodeAuthMessage(authMsg)
-
   check ret
 
   var ackMsg: array[AckMessageMaxEIP8, byte]
   var ackMsgLen: int
   check handshake.ackMessage(ackMsg, ackMsgLen)
-
   await s.send(addr ackMsg[0], ackMsgLen)
+
   initSecretState(handshake, authMsg, ^ackMsg, result)
 
   var response = await result.nextMsg(p2p.hello, discardOthers = true)
