@@ -72,6 +72,7 @@ type
     remoteEPubkey*: PublicKey   ## remote host ephemeral public key
     initiatorNonce*: Nonce      ## initiator nonce
     responderNonce*: Nonce      ## responder nonce
+    expectedLength*: int        ## expected incoming message length
 
   ConnectionSecret* = object
     aesKey*: array[aes256.sizeKey, byte]
@@ -96,9 +97,11 @@ proc newHandshake*(flags: set[HandshakeFlag] = {Initiator},
   result.flags = flags
   result.ephemeral = newKeyPair()
   if Initiator in flags:
+    result.expectedLength = AckMessageV4Length
     if randomBytes(result.initiatorNonce) != len(result.initiatorNonce):
       raise newException(AuthException, "Could not obtain random data!")
   else:
+    result.expectedLength = AuthMessageV4Length
     if randomBytes(result.responderNonce) != len(result.responderNonce):
       raise newException(AuthException, "Could not obtain random data!")
 
@@ -334,17 +337,17 @@ proc decodeAuthMessageV4(h: var Handshake, m: openarray[byte]): AuthStatus =
   h.remoteHPubkey = pubkey
   result = Success
 
-proc expectedAuthMsgLenEip8*(input: openarray[byte]): uint16 {.inline.} =
-  bigEndian16(addr result, unsafeAddr input[0])
-
 proc decodeAuthMessageEip8(h: var Handshake, m: openarray[byte]): AuthStatus =
   ## Decodes EIP-8 AuthMessage.
   var
     pubkey: PublicKey
     nonce: Nonce
     secret: SharedSecret
-  let size = expectedAuthMsgLenEip8(m)
-  if 2 + int(size) > len(m):
+    size: uint16
+
+  bigEndian16(addr size, unsafeAddr m[0])
+  h.expectedLength = int(size) + 2
+  if h.expectedLength > len(m):
     return(IncompleteError)
   var buffer = newSeq[byte](eciesDecryptedLength(int(size)))
   if eciesDecrypt(toa(m, 2, int(size)), buffer, h.host.seckey,
@@ -388,9 +391,9 @@ proc decodeAuthMessageEip8(h: var Handshake, m: openarray[byte]): AuthStatus =
 proc decodeAckMessageEip8*(h: var Handshake, m: openarray[byte]): AuthStatus =
   ## Decodes EIP-8 AckMessage.
   var size: uint16
-  assert(len(m) > 2)
   bigEndian16(addr size, unsafeAddr m[0])
-  if 2 + int(size) > len(m):
+  h.expectedLength = 2 + int(size)
+  if h.expectedLength > len(m):
     return(IncompleteError)
   var buffer = newSeq[byte](eciesDecryptedLength(int(size)))
   if eciesDecrypt(toa(m, 2, int(size)), buffer, h.host.seckey,
@@ -456,9 +459,10 @@ proc decodeAckMessage*(h: var Handshake, input: openarray[byte]): AuthStatus =
   if len(input) < AckMessageV4Length:
     return(IncompleteError)
   elif len(input) == AckMessageV4Length:
-    let res = h.decodeAckMessageV4(input)
+    var res = h.decodeAckMessageV4(input)
     if res != Success:
-      if h.decodeAckMessageEip8(input) != Success:
+      res = h.decodeAckMessageEip8(input)
+      if res != Success:
         result = res
       else:
         h.flags.incl(EIP8)
