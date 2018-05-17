@@ -555,7 +555,8 @@ proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer]
   await result.socket.send(addr authMsg[0], authMsgLen)
 
   let initialSize = handshake.expectedLength
-  var ackMsg = newSeq[byte](initialSize)
+  var ackMsg = newSeqOfCap[byte](1024)
+  ackMsg.setLen(initialSize)
   await result.socket.fullRecvInto(ackMsg)
   var ret = handshake.decodeAckMessage(ackMsg)
   if ret == AuthStatus.IncompleteError:
@@ -587,7 +588,8 @@ proc rlpxConnectIncoming*(myKeys: KeyPair, listenPort: Port, address: IpAddress,
   handshake.host = myKeys
 
   let initialSize = handshake.expectedLength
-  var authMsg = newSeq[byte](initialSize)
+  var authMsg = newSeqOfCap[byte](1024)
+  authMsg.setLen(initialSize)
   await s.fullRecvInto(authMsg)
   var ret = handshake.decodeAuthMessage(authMsg)
   if ret == AuthStatus.IncompleteError: # Eip8 auth message is likely
