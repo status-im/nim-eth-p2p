@@ -40,7 +40,7 @@ proc dumpHex*(pbytes: pointer, nbytes: int, items = 1, ascii = true): string =
     var k = 0
     while k < items:
       var ch = cast[ptr char](cast[uint](slider) + k.uint)[]
-      if ord(ch) > 31 and ord(ch) < 127: asciiText &= ch else: asciiText &= "."
+      if ascii or (ord(ch) > 31 and ord(ch) < 127): asciiText &= ch else: asciiText &= "."
       inc(k)
     case items:
     of 1:
