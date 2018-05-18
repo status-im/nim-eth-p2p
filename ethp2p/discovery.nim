@@ -65,15 +65,9 @@ proc append*(w: var RlpWriter, a: IpAddress) =
   of IpAddressFamily.IPv4:
     w.append(a.address_v4.toMemRange)
 
-proc append*(w: var RlpWriter, p: Port) {.inline.} = w.append(p.int)
-
-proc append*(w: var RlpWriter, pk: PublicKey) {.inline.} =
-  var bytes: array[64, byte]
-  pk.toRaw(bytes)
-  w.append(toMemRange(bytes))
-
-proc append*(w: var RlpWriter, h: MDigest[256]) {.inline.} =
-  w.append(toMemRange(h.data))
+proc append(w: var RlpWriter, p: Port) {.inline.} = w.append(p.int)
+proc append(w: var RlpWriter, pk: PublicKey) {.inline.} = w.append(pk.getRaw())
+proc append(w: var RlpWriter, h: MDigest[256]) {.inline.} = w.append(h.data)
 
 proc pack(cmdId: CommandId, payload: BytesRange, pk: PrivateKey): Bytes =
   ## Create and sign a UDP message to be sent to a remote node.
