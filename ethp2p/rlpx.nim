@@ -76,8 +76,8 @@ const
   clienId = "Nimbus 0.1.0"
 
 var
-  gProtocols = newSeq[ProtocolInfo](0)
-  gCapabilities = newSeq[Capability](0)
+  gProtocols: seq[ProtocolInfo]
+  gCapabilities: seq[Capability]
   gDispatchers = initSet[Dispatcher]()
   devp2p: ProtocolInfo
 
@@ -113,7 +113,7 @@ proc getDispatcher(otherPeerCapabilities: openarray[Capability]): Dispatcher =
   new(result)
   newSeq(result.protocolOffsets, gProtocols.len)
 
-  var nextUserMsgId = 0x10 + 1
+  var nextUserMsgId = 0x10
 
   for i in 0 .. <gProtocols.len:
     let localProtocol = gProtocols[i]
@@ -173,6 +173,8 @@ proc registerMsg(protocol: var ProtocolInfo,
 proc registerProtocol(protocol: ProtocolInfo) =
   # XXX: This can be done at compile-time in the future
   if protocol.version > 0:
+    if gProtocols.isNil: gProtocols = @[]
+    if gCapabilities.isNil: gCapabilities = @[]
     let pos = lowerBound(gProtocols, protocol)
     gProtocols.insert(protocol, pos)
     gCapabilities.insert(Capability(name: protocol.name, version: protocol.version), pos)
@@ -246,7 +248,7 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   let remainingBytes = encryptedLength(msgSize) - 32
   # XXX: Migrate this to a thread-local seq
   var encryptedBytes = newSeq[byte](remainingBytes)
-  await peer.socket.fullRecvInto(encryptedBytes.baseAddr, remainingBytes)
+  await peer.socket.fullRecvInto(encryptedBytes)
 
   let decryptedMaxLength = decryptedLength(msgSize)
   var
@@ -273,9 +275,12 @@ proc nextMsg*(peer: Peer, MsgType: typedesc,
 
   while true:
     var (nextMsgId, nextMsgData) = await peer.recvMsg()
+    # echo "got msg(", nextMsgId, "): ", nextMsgData.inspect
     if nextMsgId == wantedId:
       return nextMsgData.read(MsgType)
     elif not discardOthers:
+      if nextMsgData.listLen != 0:
+        nextMsgData = nextMsgData.listElem(0)
       peer.dispatchMsg(nextMsgId, nextMsgData)
 
 iterator typedParams(n: NimNode, skip = 0): (NimNode, NimNode) =
@@ -327,6 +332,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     writeMsgId = bindSym "writeMsgId"
     isSubprotocol = version > 0
     stateType: NimNode = nil
+    msgThunksAndRegistrations = newNimNode(nnkStmtList)
 
   # By convention, all Ethereum protocol names must be abbreviated to 3 letters
   assert protoName.len == 3
@@ -415,7 +421,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
 
           nCopy.body.insert 0, localStateAccessor
 
-        result.add nCopy, thunk
+        msgThunksAndRegistrations.add(nCopy, thunk)
 
       var
         msgType = genSym(nskType, msgName & "Obj")
@@ -467,7 +473,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
         return `send`(`peer`, `finish`(`rlpWriter`))
 
       result.add n
-      result.add newCall(bindSym("registerMsg"),
+      msgThunksAndRegistrations.add newCall(bindSym("registerMsg"),
                          protocol,
                          newIntLitNode(nextId),
                          newStrLitNode($n.name),
@@ -477,6 +483,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     else:
       error("illegal syntax in a RLPx protocol definition", n)
 
+  result.add(msgThunksAndRegistrations)
   result.add newCall(bindSym("registerProtocol"), protocol)
   when isMainModule: echo repr(result)
 
@@ -508,7 +515,8 @@ rlpxProtocol p2p, 0:
 
   proc disconnect(peer: Peer, reason: DisconnectionReason)
 
-  proc ping(peer: Peer)
+  proc ping(peer: Peer) =
+    discard peer.pong()
 
   proc pong(peer: Peer) =
     discard
