@@ -1,6 +1,6 @@
 # nim-eth-p2p [![Build Status](https://travis-ci.org/status-im/nim-eth-p2p.svg?branch=master)](https://travis-ci.org/status-im/nim-eth-p2p) [![Build status](https://ci.appveyor.com/api/projects/status/i4txsa2pdyaahmn0/branch/master?svg=true)](https://ci.appveyor.com/project/cheatfate/nim-eth-p2p/branch/master)[![License: Apache](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)![Stability: experimental](https://img.shields.io/badge/stability-experimental-orange.svg)
 
-[Nim] Ethereum P2P protocol implementation
+This library is a Nim re-implementation of the Ethereum DevP2P networking protocol.
 
 ## RLPx
 
