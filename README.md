@@ -1,6 +1,13 @@
-# nim-eth-p2p [![Build Status](https://travis-ci.org/status-im/nim-eth-p2p.svg?branch=master)](https://travis-ci.org/status-im/nim-eth-p2p) [![Build status](https://ci.appveyor.com/api/projects/status/i4txsa2pdyaahmn0/branch/master?svg=true)](https://ci.appveyor.com/project/cheatfate/nim-eth-p2p/branch/master)[![License: Apache](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)![Stability: experimental](https://img.shields.io/badge/stability-experimental-orange.svg)
+**nim-eth-p2p** [![Build Status](https://travis-ci.org/status-im/nim-eth-p2p.svg?branch=master)](https://travis-ci.org/status-im/nim-eth-p2p) [![Build status](https://ci.appveyor.com/api/projects/status/i4txsa2pdyaahmn0/branch/master?svg=true)](https://ci.appveyor.com/project/cheatfate/nim-eth-p2p/branch/master)[![License: Apache](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)![Stability: experimental](https://img.shields.io/badge/stability-experimental-orange.svg)
+
+## Introduction
 
 This library is a Nim re-implementation of the Ethereum DevP2P networking protocol.
+
+## Installation
+nimble install 
+https://github.com/status-im/nim-eth-p2p/blob/master/ethp2p.nimble
+
 
 ## RLPx
 
@@ -127,7 +134,9 @@ if peer.supports(les): # `les` is the identifier of the light clients sub-protoc
 
 ## License
 
-Licensed and distributed under either of
-  * MIT license (license terms in the root directory or at http://opensource.org/licenses/MIT).
-  * Apache v2 license (license terms in the root directory or at http://www.apache.org/licenses/LICENSE-2.0).
-at your option. This file may not be copied, modified, or distributed except according to those terms.
+Distributed under one of the following:
+
+* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+This file may not be copied, modified, or distributed except according to those terms.
