@@ -5,8 +5,7 @@
 This library is a Nim re-implementation of the Ethereum DevP2P networking protocol.
 
 ## Installation
-nimble install 
-https://github.com/status-im/nim-eth-p2p/blob/master/ethp2p.nimble
+$ nimble install ethp2p
 
 
 ## RLPx
