@@ -5,8 +5,10 @@
 This library is a Nim re-implementation of the Ethereum DevP2P networking protocol.
 
 ## Installation
-$ nimble install ethp2p
 
+```
+$ nimble install eth_p2p
+```
 
 ## RLPx
 
@@ -16,7 +18,7 @@ network. Most of the client code of this library should not be concerned
 with the implementation details of the underlying protocols and should use
 the high-level APIs described in this section.
 
-To obtain a RLPx connection, use the proc `rlpxConnect` supplying the
+To obtain a RLPx connection, use the `rlpxConnect` proc supplying the
 id of another node in the network. On success, the proc will return a
 `Peer` object representing the connection. Each of the RLPx sub-protocols
 consists of a set of strongly-typed messages, which are represented by

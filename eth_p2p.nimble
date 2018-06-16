@@ -1,6 +1,6 @@
 mode = ScriptMode.Verbose
 
-packageName   = "ethp2p"
+packageName   = "eth_p2p"
 version       = "1.0.0"
 author        = "Status Research & Development GmbH"
 description   = "Ethereum P2P library"
@@ -14,7 +14,7 @@ requires "nim > 0.18.0",
          "eth_keys",
          "ranges",
          "stint",
-         "https://github.com/status-im/nim-byteutils"
+         "byteutils"
 
 proc runTest(name: string, lang = "c") = exec "nim " & lang & " -r tests/" & name
 

@@ -8,5 +8,5 @@
 #            MIT license (LICENSE-MIT)
 #
 
-import ethp2p/[ecies, auth, enode, rlpxcrypt, discovery, kademlia]
+import eth_p2p/[ecies, auth, enode, rlpxcrypt, discovery, kademlia]
 export ecies, auth, enode, rlpxcrypt, discovery, kademlia

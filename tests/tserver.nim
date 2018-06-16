@@ -1,5 +1,6 @@
-import ../ethp2p/[discovery, kademlia, peer_pool, enode, server, rlpx]
-import eth_keys, net, asyncdispatch, sequtils
+import
+  eth_keys, net, asyncdispatch, sequtils,
+  ../eth_p2p/[discovery, kademlia, peer_pool, enode, server, rlpx]
 
 proc localAddress(port: int): Address =
   let port = Port(port)

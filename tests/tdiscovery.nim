@@ -1,7 +1,6 @@
-import ../ethp2p/[discovery, kademlia, peer_pool, enode]
-import eth_keys, net, asyncdispatch, sequtils
-
-import logging, byteutils
+import
+  eth_keys, net, asyncdispatch, sequtils, logging, byteutils,
+  ../eth_p2p/[discovery, kademlia, peer_pool, enode]
 
 addHandler(newConsoleLogger())
 
