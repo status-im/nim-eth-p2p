@@ -8,13 +8,11 @@
 #            MIT license (LICENSE-MIT)
 #
 
-import asyncdispatch, net, uri, logging, tables, hashes, times, algorithm, sets,
-  sequtils, random
+import uri, logging, tables, hashes, times, algorithm, sets, sequtils, random
 from strutils import parseInt
+import asyncdispatch2, eth_keys, stint, nimcrypto, enode
 
 export sets # TODO: This should not be needed, but compilation fails otherwise
-
-import eth_keys, stint, nimcrypto, enode
 
 type
   KademliaProtocol* [Wire] = ref object
@@ -23,7 +21,7 @@ type
     routing: RoutingTable
     pongFutures: Table[seq[byte], Future[bool]]
     pingFutures: Table[Node, Future[bool]]
-    neighboursCallbacks: Table[Node, proc(n: seq[Node])]
+    neighboursCallbacks: Table[Node, proc(n: seq[Node]) {.gcsafe.}]
 
   NodeId* = UInt256
 
@@ -44,8 +42,8 @@ type
 const
   BUCKET_SIZE = 16
   BITS_PER_HOP = 8
-  REQUEST_TIMEOUT = 0.9                  # timeout of message round trips
-  FIND_CONCURRENCY = 3                   # parallel find node lookups
+  REQUEST_TIMEOUT = 900                 # timeout of message round trips
+  FIND_CONCURRENCY = 3                  # parallel find node lookups
   ID_SIZE = 256
 
 proc toNodeId(pk: PublicKey): NodeId =
@@ -246,7 +244,7 @@ proc updateRoutingTable(k: KademliaProtocol, n: Node) =
       asyncCheck k.bond(evictionCandidate)
 
 proc doSleep(p: proc()) {.async.} =
-  await sleepAsync(REQUEST_TIMEOUT * 1000)
+  await sleepAsync(REQUEST_TIMEOUT)
   p()
 
 template onTimeout(b: untyped) =
@@ -266,7 +264,7 @@ proc waitPong(k: KademliaProtocol, n: Node, token: seq[byte]): Future[bool] =
 
 proc ping(k: KademliaProtocol, n: Node): seq[byte] =
   assert(n != k.thisNode)
-  k.wire.sendPing(n)
+  result = k.wire.sendPing(n)
 
 proc waitPing(k: KademliaProtocol, n: Node): Future[bool] =
   result = newFuture[bool]("waitPing")
@@ -409,7 +407,6 @@ proc bootstrap*(k: KademliaProtocol, bootstrapNodes: seq[Node]) {.async.} =
 
 proc recvPong*(k: KademliaProtocol, n: Node, token: seq[byte]) =
   debug "<<< pong from ", n
-
   let pingid = token & @(n.node.pubkey.data)
   var future: Future[bool]
   if k.pongFutures.take(pingid, future):

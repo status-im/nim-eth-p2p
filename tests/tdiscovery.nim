@@ -1,6 +1,15 @@
-import
-  eth_keys, net, asyncdispatch, sequtils, logging, byteutils,
-  ../eth_p2p/[discovery, kademlia, peer_pool, enode]
+#
+#                 Ethereum P2P
+#              (c) Copyright 2018
+#       Status Research & Development GmbH
+#
+#    See the file "LICENSE", included in this
+#    distribution, for details about the copyright.
+#
+
+import sequtils, logging
+import eth_keys, asyncdispatch2, byteutils
+import eth_p2p/[discovery, kademlia, peer_pool, enode]
 
 addHandler(newConsoleLogger())
 
@@ -23,7 +32,6 @@ let
     initPrivateKey("a2b50376a79b1a8c8a3296485572bdfbf54708bb46d3c25d73d2723aaaf6a619"),
     initPrivateKey("a2b50376a79b1a8c8a3296485572bdfbf54708bb46d3c25d73d2723aaaf6a620")
   ]
-
 proc nodeIdInNodes(id: NodeId, nodes: openarray[Node]): bool =
   for n in nodes:
     if id == n.id: return true

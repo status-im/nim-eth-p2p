@@ -11,9 +11,8 @@
 ## This module implements Ethereum authentication
 
 import endians
-import eth_keys, ecies, rlp
-import nimcrypto/sysrand, nimcrypto/hash, nimcrypto/utils, nimcrypto/hmac
-import nimcrypto/rijndael, nimcrypto/keccak, nimcrypto/sha2
+import eth_keys, nimcrypto, rlp
+import ecies
 
 const
   SupportedRlpxVersion* = 4

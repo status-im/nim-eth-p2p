@@ -10,10 +10,7 @@
 
 ## This module implements RLPx cryptography
 
-import
-  ranges/stackarrays, rlp/types,
-  nimcrypto/[rijndael, bcmode, keccak, utils]
-
+import ranges/stackarrays, rlp/types, nimcrypto
 from auth import ConnectionSecret
 
 const

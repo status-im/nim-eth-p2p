@@ -7,10 +7,9 @@
 #    distribution, for details about the copyright.
 #
 
-import
-  unittest, eth_keys,
-  nimcrypto/[utils, sysrand, nimcrypto/keccak],
-  eth_p2p/[auth, rlpxcrypt]
+import unittest
+import eth_keys, nimcrypto/[utils, sysrand, keccak]
+import eth_p2p/[auth, rlpxcrypt]
 
 const data = [
   ("initiator_private_key",
