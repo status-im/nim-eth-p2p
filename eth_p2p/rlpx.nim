@@ -99,12 +99,6 @@ proc hash(d: Dispatcher): int =
 proc `==`(lhs, rhs: Dispatcher): bool =
   lhs.protocolOffsets == rhs.protocolOffsets
 
-template totalThunks(d: Dispatcher): int =
-  d.thunks.len
-
-template getThunk(d: Dispatcher, idx: int): MessageHandler =
-  rlpxProtocols.thunks[idx]
-
 proc describeProtocols(d: Dispatcher): string =
   result = ""
   for i in 0 ..< rlpxProtocols.len:
@@ -658,11 +652,13 @@ when isMainModule:
   var p = Peer()
   discard p.bar(10, "test")
 
-  when false:
-    # The assignment below can be used to investigate if the RLPx procs
+  when true:
+    # The assignments below can be used to investigate if the RLPx procs
     # are considered GcSafe. The short answer is that they aren't, because
     # they dispatch into user code that might use the GC.
     type
+      GcSafeDispatchMsg = proc (peer: Peer, msgId: int, msgData: var Rlp)
+
       GcSafeRecvMsg = proc (peer: Peer):
         Future[tuple[msgId: int, msgData: Rlp]] {.gcsafe.}
 
@@ -670,6 +666,7 @@ when isMainModule:
         Future[Peer] {.gcsafe.}
 
     var
+      dispatchMsgPtr = dispatchMsg
       recvMsgPtr: GcSafeRecvMsg = recvMsg
       acceptPtr: GcSafeAccept = rlpxAccept
 
