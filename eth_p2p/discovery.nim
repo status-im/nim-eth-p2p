@@ -9,9 +9,9 @@
 #
 
 from strutils import nil
-import asyncnet, asyncdispatch, net, times, nativesockets, algorithm, logging
+import times, algorithm, logging
+import asyncdispatch2, eth_keys, ranges, stint, nimcrypto, rlp
 import kademlia, enode
-import eth_keys, rlp, ranges, stint, nimcrypto
 
 export Node
 
@@ -33,7 +33,6 @@ const
     "enode://6456719e7267e061161c88720287a77b80718d2a3a4ff5daeba614d029dc77601b75e32190aed1c9b0b9ccb6fac3bcf000f48e54079fa79e339c25d8e9724226@127.0.0.1:30301"
   ]
 
-
   # UDP packet constants.
   MAC_SIZE = 256 div 8  # 32
   SIG_SIZE = 520 div 8  # 65
@@ -48,7 +47,7 @@ type
     bootstrapNodes*: seq[Node]
     thisNode*: Node
     kademlia: KademliaProtocol[DiscoveryProtocol]
-    socket: AsyncSocket
+    transp: DatagramTransport
 
   CommandId = enum
     cmdPing = 1
@@ -98,20 +97,9 @@ proc expiration(): uint32 =
 
 # Wire protocol
 
-proc sendTo*(socket: AsyncFD, data: seq[byte], ip: IpAddress, port: Port,
-    flags = {SocketFlag.SafeDisconn}) {.async.} =
-  var sa: Sockaddr_storage
-  var ln: Socklen
-  ip.toSockaddr(port, sa, ln)
-  try:
-    await sendTo(socket, unsafeAddr data[0], data.len, cast[ptr Sockaddr](addr sa), ln)
-  except:
-    error "sendTo failed: ", getCurrentExceptionMsg()
-
 proc send(d: DiscoveryProtocol, n: Node, data: seq[byte]) =
-  asyncCheck d.socket.getFd().AsyncFD.sendTo(data,
-                                             n.node.address.ip,
-                                             n.node.address.udpPort)
+  let ta = initTAddress(n.node.address.ip, n.node.address.udpPort)
+  asyncCheck d.transp.sendTo(ta, data)
 
 proc sendPing*(d: DiscoveryProtocol, n: Node): seq[byte] =
   let payload = rlp.encode((PROTO_VERSION, d.address, n.node.address,
@@ -157,7 +145,9 @@ proc sendNeighbours*(d: DiscoveryProtocol, node: Node, neighbours: seq[Node]) =
 
   if nodes.len != 0: flush()
 
-proc newDiscoveryProtocol*(privKey: PrivateKey, address: Address, bootstrapNodes: openarray[ENode]): DiscoveryProtocol =
+proc newDiscoveryProtocol*(privKey: PrivateKey, address: Address,
+                           bootstrapNodes: openarray[ENode]
+                           ): DiscoveryProtocol =
   result.new()
   result.privKey = privKey
   result.address = address
@@ -166,7 +156,8 @@ proc newDiscoveryProtocol*(privKey: PrivateKey, address: Address, bootstrapNodes
   result.thisNode = newNode(privKey.getPublicKey(), address)
   result.kademlia = newKademliaProtocol(result.thisNode, result) {.explain.}
 
-proc recvPing(d: DiscoveryProtocol, node: Node, msgHash: MDigest[256]) {.inline.} =
+proc recvPing(d: DiscoveryProtocol, node: Node,
+              msgHash: MDigest[256]) {.inline.} =
   d.kademlia.recvPing(node, msgHash)
 
 proc recvPong(d: DiscoveryProtocol, node: Node, payload: Bytes) {.inline.} =
@@ -174,7 +165,8 @@ proc recvPong(d: DiscoveryProtocol, node: Node, payload: Bytes) {.inline.} =
   let tok = rlp.listElem(1).toBytes().toSeq()
   d.kademlia.recvPong(node, tok)
 
-proc recvNeighbours(d: DiscoveryProtocol, node: Node, payload: Bytes) {.inline.} =
+proc recvNeighbours(d: DiscoveryProtocol, node: Node,
+                    payload: Bytes) {.inline.} =
   let rlp = rlpFromBytes(payload.toRange)
   let neighboursList = rlp.listElem(0)
   let sz = neighboursList.listLen()
@@ -245,28 +237,23 @@ proc receive(d: DiscoveryProtocol, a: Address, msg: Bytes) =
   else:
     error "Wrong msg mac from ", a
 
-proc runListeningLoop(d: DiscoveryProtocol) {.async.} =
-  var buf = newSeq[byte](MaxDgramSize)
-  var saddr: Sockaddr_storage
-  var slen: Socklen
-  while not d.socket.isNil:
-    buf.setLen(MaxDgramSize)
-    slen = sizeof(saddr).Socklen
-    let received = await recvFromInto(d.socket.getFd().AsyncFD, addr buf[0], buf.len, cast[ptr SockAddr](addr saddr), addr slen)
-    buf.setLen(received)
-    try:
-      var port: Port
-      var ip: IpAddress
-      fromSockAddr(saddr, slen, ip, port)
-      d.receive(Address(ip: ip, udpPort: port, tcpPort: port), buf)
-    except:
-      error "receive failed: ", getCurrentExceptionMsg()
+proc processClient(transp: DatagramTransport,
+                   raddr: TransportAddress): Future[void] {.async, gcsafe.} =
+  var proto = getUserData[DiscoveryProtocol](transp)
+  var buf: seq[byte]
+  try:
+    # TODO: Maybe here better to use `peekMessage()` to avoid allocation,
+    # but `Bytes` object is just a simple seq[byte], and `ByteRange` object
+    # do not support custom length.
+    var buf = transp.getMessage()
+    let a = Address(ip: raddr.address, udpPort: raddr.port, tcpPort: raddr.port)
+    proto.receive(a, buf)
+  except:
+    error "receive failed: ", getCurrentExceptionMsg()
 
 proc open*(d: DiscoveryProtocol) =
-  d.socket = newAsyncSocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-  d.socket.bindAddr(port = d.address.udpPort)
-
-  asyncCheck d.runListeningLoop()
+  let ta = initTAddress(d.address.ip, d.address.udpPort)
+  d.transp = newDatagramTransport(processClient, udata = d, local = ta)
 
 proc bootstrap*(d: DiscoveryProtocol) {.async.} =
   await d.kademlia.bootstrap(d.bootstrapNodes)

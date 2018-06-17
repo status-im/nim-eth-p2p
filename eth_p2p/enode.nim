@@ -8,7 +8,8 @@
 #            MIT license (LICENSE-MIT)
 #
 
-import uri, eth_keys, strutils, net
+import uri, strutils, net
+import eth_keys
 
 type
   ENodeStatus* = enum

@@ -1,52 +1,57 @@
-import peer_pool, discovery, enode, async, asyncnet, auth, rlpx, net
-import eth_keys
+#
+#                 Ethereum P2P
+#              (c) Copyright 2018
+#       Status Research & Development GmbH
+#
+#            Licensed under either of
+#  Apache License, version 2.0, (LICENSE-APACHEv2)
+#            MIT license (LICENSE-MIT)
+#
 
-type Server* = ref object
-  socket: AsyncSocket
-  chainDb: AsyncChainDb
-  keyPair: KeyPair
-  address: Address
-  networkId: int
-  discovery: DiscoveryProtocol
-  peerPool: PeerPool
+import asyncdispatch2, eth_keys
+import peer_pool, discovery, enode, auth, rlpx
 
-proc newServer*(keyPair: KeyPair, address: Address, chainDb: AsyncChainDB,
-                bootstrapNodes: openarray[ENode], networkId: int): Server =
+type
+  P2PServer* = ref object
+    server: StreamServer
+    chainDb: AsyncChainDb
+    keyPair: KeyPair
+    address: Address
+    networkId: int
+    discovery: DiscoveryProtocol
+    peerPool: PeerPool
+
+proc processIncoming(server: StreamServer,
+                     remote: StreamTransport): Future[void] {.async, gcsafe.} =
+  var p2p = getUserData[P2PServer](server)
+  let peerfut = remote.rlpxAccept(p2p.keyPair)
+  yield peerfut
+  if not peerfut.failed:
+    let peer = peerfut.read()
+    echo "TODO: Add peer to the pool..."
+  else:
+    echo "Could not establish connection with incoming peer ",
+         $remote.remoteAddress()
+    remote.close()
+
+proc newP2PServer*(keyPair: KeyPair, address: Address, chainDb: AsyncChainDB,
+                   bootstrapNodes: openarray[ENode],
+                   networkId: int): P2PServer =
   result.new()
   result.chainDb = chainDb
   result.keyPair = keyPair
   result.address = address
   result.networkId = networkId
-  # TODO: bootstrap_nodes should be looked up by network_id.
-  result.discovery = newDiscoveryProtocol(keyPair.seckey, address, bootstrapNodes)
+  result.discovery = newDiscoveryProtocol(keyPair.seckey, address,
+                                          bootstrapNodes)
   result.peerPool = newPeerPool(chainDb, networkId, keyPair, result.discovery)
 
-proc isRunning(s: Server): bool {.inline.} = not s.socket.isNil
+  let ta = initTAddress(address.ip, address.tcpPort)
+  result.server = createStreamServer(ta, processIncoming, {ReuseAddr},
+                                     udata = result)
 
-proc receiveHandshake(s: Server, address: string, remote: AsyncSocket) {.async.} =
-  let p = await rlpxConnectIncoming(s.keyPair, s.address.tcpPort, parseIpAddress(address), remote)
-  if not p.isNil:
-    echo "TODO: Add peer to the pool..."
-  else:
-    echo "Could not establish connection with incoming peer"
+proc start*(s: P2PServer) =
+  s.server.start()
 
-proc run(s: Server) {.async.} =
-  # TODO: Add error handling
-  s.socket = newAsyncSocket()
-  s.socket.setSockOpt(OptReuseAddr, true)
-  s.socket.bindAddr(s.address.tcpPort)
-  s.socket.listen()
-
-  while s.isRunning:
-    let (address, client) = await s.socket.acceptAddr()
-    discard s.receiveHandshake(address, client)
-
-proc start*(s: Server) =
-  if not s.isRunning:
-    discard s.run()
-
-proc stop*(s: Server) =
-  if s.isRunning:
-    s.socket.close()
-    s.socket = nil
-    # s.peerPool.stop() # XXX
+proc stop*(s: P2PServer) =
+  s.server.stop()

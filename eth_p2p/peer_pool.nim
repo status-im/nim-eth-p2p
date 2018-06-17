@@ -8,8 +8,8 @@
 #            MIT license (LICENSE-MIT)
 #
 
-import logging, tables, asyncdispatch, times, random
-import eth_keys
+import logging, tables, times, random
+import eth_keys, asyncdispatch2
 import discovery, rlpx, kademlia
 
 type
@@ -32,9 +32,8 @@ const
   lookupInterval = 5
   connectLoopSleepMs = 2000
 
-
 proc newPeerPool*(chainDb: AsyncChainDb, networkId: int, keyPair: KeyPair,
-        discovery: DiscoveryProtocol, minPeers = 10): PeerPool =
+                  discovery: DiscoveryProtocol, minPeers = 10): PeerPool =
   result.new()
   result.keyPair = keyPair
   result.minPeers = minPeers
@@ -74,7 +73,7 @@ proc connect(p: PeerPool, remote: Node): Future[Peer] {.async.} =
     debug "Skipping ", remote, "; already connected to it"
     return nil
 
-  result = await rlpxConnect(p.keyPair, p.listenPort, remote)
+  result = await remote.rlpxConnect(p.keyPair, p.listenPort)
 
   # expected_exceptions = (
   #   UnreachablePeer, TimeoutError, PeerConnectionLost, HandshakeFailure)
@@ -95,15 +94,16 @@ proc connect(p: PeerPool, remote: Node): Future[Peer] {.async.} =
   # return None
 
 proc lookupRandomNode(p: PeerPool) {.async.} =
-  # This method runs in the background, so we must catch OperationCancelled here otherwise
-  # asyncio will warn that its exception was never retrieved.
+  # This method runs in the background, so we must catch OperationCancelled
+  # ere otherwise asyncio will warn that its exception was never retrieved.
   try:
     discard await p.discovery.lookupRandom()
   except: # OperationCancelled
     discard
   p.lastLookupTime = epochTime()
 
-proc getRandomBootnode(p: PeerPool): seq[Node] = @[p.discovery.bootstrapNodes.rand()]
+proc getRandomBootnode(p: PeerPool): seq[Node] =
+  @[p.discovery.bootstrapNodes.rand()]
 
 proc peerFinished(p: PeerPool, peer: Peer) =
   ## Remove the given peer from our list of connected nodes.
@@ -117,8 +117,8 @@ proc run(p: Peer, completionHandler: proc() = nil) {.async.} =
 
 proc connectToNodes(p: PeerPool, nodes: seq[Node]) {.async.} =
   for node in nodes:
-    # TODO: Consider changing connect() to raise an exception instead of returning None,
-    # as discussed in
+    # TODO: Consider changing connect() to raise an exception instead of
+    # returning None, as discussed in
     # https://github.com/ethereum/py-evm/pull/139#discussion_r152067425
     let peer = await p.connect(node)
     if not peer.isNil:
@@ -143,8 +143,9 @@ proc maybeConnectToMorePeers(p: PeerPool) {.async.} =
 
   await p.connectToNodes(p.nodesToConnect())
 
-  # In some cases (e.g ROPSTEN or private testnets), the discovery table might be full of
-  # bad peers so if we can't connect to any peers we try a random bootstrap node as well.
+  # In some cases (e.g ROPSTEN or private testnets), the discovery table might
+  # be full of bad peers, so if we can't connect to any peers we try a random
+  # bootstrap node as well.
   if p.connectedNodes.len == 0:
     await p.connectToNodes(p.getRandomBootnode())
 
@@ -156,7 +157,8 @@ proc run(p: PeerPool) {.async.} =
     try:
       await p.maybeConnectToMorePeers()
     except:
-      # Most unexpected errors should be transient, so we log and restart from scratch.
+      # Most unexpected errors should be transient, so we log and restart from
+      # scratch.
       error "Unexpected error, restarting"
       dropConnections = true
 
@@ -173,7 +175,8 @@ proc start*(p: PeerPool) =
 # @property
 # def peers(self) -> List[BasePeer]:
 #   peers = list(self.connected_nodes.values())
-#   # Shuffle the list of peers so that dumb callsites are less likely to send all requests to
+#   # Shuffle the list of peers so that dumb callsites are less likely to send
+#   # all requests to
 #   # a single peer even if they always pick the first one from the list.
 #   random.shuffle(peers)
 #   return peers

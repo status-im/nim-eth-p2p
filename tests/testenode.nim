@@ -7,8 +7,8 @@
 #  Apache License, version 2.0, (LICENSE-APACHEv2)
 #            MIT license (LICENSE-MIT)
 
-import
-  unittest, net, eth_p2p/enode
+import unittest, net
+import eth_p2p/enode
 
 suite "ENode":
   test "Go-Ethereum tests":

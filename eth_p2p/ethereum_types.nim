@@ -8,8 +8,7 @@
 #            MIT license (LICENSE-MIT)
 #
 
-import
-  rlp/types, nimcrypto/hash, stint
+import rlp/types, nimcrypto/hash, stint
 
 export
   MDigest

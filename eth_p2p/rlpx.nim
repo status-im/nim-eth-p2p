@@ -8,10 +8,10 @@
 #            MIT license (LICENSE-MIT)
 #
 
-import
-  macros, sets, algorithm, async, asyncnet, asyncfutures, net, logging,
-  hashes, rlp, ranges/[stackarrays, ptr_arith], eth_keys,
-  ethereum_types, kademlia, discovery, auth, rlpxcrypt, nimcrypto, enode
+import macros, sets, algorithm, logging, hashes
+import rlp, ranges/[stackarrays, ptr_arith], eth_keys, ethereum_types,
+       nimcrypto, asyncdispatch2
+import kademlia, discovery, auth, rlpxcrypt, enode
 
 type
   ConnectionState = enum
@@ -21,7 +21,7 @@ type
     Disconnected
 
   Peer* = ref object
-    socket: AsyncSocket
+    transp: StreamTransport
     dispatcher: Dispatcher
     networkId: int
     secretsState: SecretState
@@ -75,6 +75,7 @@ const
   baseProtocolVersion = 4
   clienId = "Nimbus 0.1.0"
 
+# TODO: Usage of this variables causes GCSAFE problems.
 var
   gProtocols: seq[ProtocolInfo]
   gCapabilities: seq[Capability]
@@ -115,7 +116,7 @@ proc getDispatcher(otherPeerCapabilities: openarray[Capability]): Dispatcher =
 
   var nextUserMsgId = 0x10
 
-  for i in 0 .. <gProtocols.len:
+  for i in 0..<gProtocols.len:
     let localProtocol = gProtocols[i]
 
     block findMatchingProtocol:
@@ -139,7 +140,7 @@ proc getDispatcher(otherPeerCapabilities: openarray[Capability]): Dispatcher =
     result.thunks = newSeq[MessageHandler](nextUserMsgId)
     devp2p.messages.copyTo(result.thunks, 0)
 
-    for i in 0 .. <gProtocols.len:
+    for i in 0..<gProtocols.len:
       if result.protocolOffsets[i] != -1:
         gProtocols[i].messages.copyTo(result.thunks, result.protocolOffsets[i])
 
@@ -195,11 +196,13 @@ proc read*(rlp: var Rlp, T: typedesc[KeccakHash]): T =
 # Message composition and encryption
 #
 
-proc writeMsgId(p: ProtocolInfo, msgId: int, peer: Peer, rlpOut: var RlpWriter) =
+proc writeMsgId(p: ProtocolInfo, msgId: int, peer: Peer,
+                rlpOut: var RlpWriter) =
   let baseMsgId = peer.dispatcher.protocolOffsets[p.index]
   if baseMsgId == -1:
     raise newException(UnsupportedProtocol,
-                       p.nameStr & " is not supported by peer " & $peer.remote.id)
+                       p.nameStr & " is not supported by peer " &
+                       $peer.remote.id)
   rlpOut.append(baseMsgId + msgId)
 
 proc dispatchMsg(peer: Peer, msgId: int, msgData: var Rlp) =
@@ -219,26 +222,13 @@ proc send(p: Peer, data: BytesRange) {.async.} =
   # echo "sending: ", rlp.read(int)
   # echo "payload: ", rlp.inspect
   var cipherText = encryptMsg(data, p.secretsState)
-  await p.socket.send(addr cipherText[0], cipherText.len)
-
-proc fullRecvInto(s: AsyncSocket, buffer: pointer, bufferLen: int) {.async.} =
-  # XXX: This should be a library function
-  var receivedBytes = 0
-  while receivedBytes < bufferLen:
-    let sz = await s.recvInto(buffer.shift(receivedBytes),
-                              bufferLen - receivedBytes)
-    if sz == 0:
-      raise newException(IOError, "Socket disconnected")
-    receivedBytes += sz
-
-template fullRecvInto(s: AsyncSocket, buff: var openarray[byte]): auto =
-  fullRecvInto(s, addr buff[0], buff.len)
+  var res = await p.transp.write(cipherText)
 
 proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   ##  This procs awaits the next complete RLPx message in the TCP stream
 
   var headerBytes: array[32, byte]
-  await peer.socket.fullRecvInto(headerBytes)
+  await peer.transp.readExactly(addr headerBytes[0], 32)
 
   var msgSize: int
   if decryptHeaderAndGetMsgSize(peer.secretsState,
@@ -248,7 +238,7 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   let remainingBytes = encryptedLength(msgSize) - 32
   # XXX: Migrate this to a thread-local seq
   var encryptedBytes = newSeq[byte](remainingBytes)
-  await peer.socket.fullRecvInto(encryptedBytes)
+  await peer.transp.readExactly(addr encryptedBytes[0], len(encryptedBytes))
 
   let decryptedMaxLength = decryptedLength(msgSize)
   var
@@ -288,7 +278,7 @@ iterator typedParams(n: NimNode, skip = 0): (NimNode, NimNode) =
     let paramNodes = n.params[i]
     let paramType = paramNodes[^2]
 
-    for j in 0 .. < (paramNodes.len-2):
+    for j in 0..<(paramNodes.len - 2):
       yield (paramNodes[j], paramType)
 
 proc chooseFieldType(n: NimNode): NimNode =
@@ -300,7 +290,7 @@ proc chooseFieldType(n: NimNode): NimNode =
   result = n
   if n.kind == nnkBracketExpr and
      n[0].kind == nnkIdent and
-     $n[0].ident == "openarray":
+     n[0].eqIdent("openarray"):
     result = n.copyNimTree
     result[0] = newIdentNode("seq")
 
@@ -351,7 +341,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
   for n in body:
     case n.kind
     of {nnkCall, nnkCommand}:
-      if n.len == 2 and n[0].kind == nnkIdent and $n[0].ident == "nextID":
+      if n.len == 2 and n[0].kind == nnkIdent and n[0].eqIdent("nextID"):
         if n[1].kind == nnkIntLit:
           nextId = n[1].intVal
         else:
@@ -359,7 +349,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
       else:
         error(repr(n) & " is not a recognized call in RLPx protocol definitions", n)
     of nnkTypeSection:
-      if n.len == 1 and n[0][0].kind == nnkIdent and $n[0][0].ident == "State":
+      if n.len == 1 and n[0][0].kind == nnkIdent and n[0][0].eqIdent("State"):
         stateType = genSym(nskType, protoName & "State")
         n[0][0] = stateType
         result.add n
@@ -372,7 +362,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     of nnkProcDef:
       let
         msgIdent = n.name.ident
-        msgName = $msgIdent
+        msgName = n.name.strVal
 
       var
         thunkName = newNilLit()
@@ -455,7 +445,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
 
       # XXX TODO: check that the first param has the correct type
       n.params[1][0] = peer
-      echo n.params.treeRepr
+      # echo n.params.treeRepr
       n.params[0] = newTree(nnkBracketExpr,
                             newIdentNode("Future"), newIdentNode("void"))
 
@@ -541,90 +531,105 @@ proc connectionEstablished(p: Peer, h: p2p.hello) =
   newSeq(p.protocolStates, gProtocols.len)
   # XXX: initialize the sub-protocol states
 
-proc initSecretState(hs: var Handshake, authMsg, ackMsg: openarray[byte], p: Peer) =
+proc initSecretState(hs: var Handshake, authMsg, ackMsg: openarray[byte],
+                     p: Peer) =
   var secrets: ConnectionSecret
   check hs.getSecrets(authMsg, ackMsg, secrets)
   initSecretState(secrets, p.secretsState)
   burnMem(secrets)
 
-proc rlpxConnect*(myKeys: KeyPair, listenPort: Port, remote: Node): Future[Peer] {.async.} =
-  # TODO: Make sure to close the socket in case of exception
+proc rlpxConnect*(remote: Node, myKeys: KeyPair,
+                  listenPort: Port): Future[Peer] {.async.} =
   new result
-  result.socket = newAsyncSocket()
   result.remote = remote
-  await result.socket.connect($remote.node.address.ip, remote.node.address.tcpPort)
+  let ta = initTAddress(remote.node.address.ip, remote.node.address.tcpPort)
+  try:
+    result.transp = await connect(ta)
 
-  var handshake = newHandshake({Initiator})
-  handshake.host = myKeys
+    var handshake = newHandshake({Initiator})
+    handshake.host = myKeys
 
-  var authMsg: array[AuthMessageMaxEIP8, byte]
-  var authMsgLen = 0
-  check authMessage(handshake, remote.node.pubkey, authMsg, authMsgLen)
-  await result.socket.send(addr authMsg[0], authMsgLen)
+    var authMsg: array[AuthMessageMaxEIP8, byte]
+    var authMsgLen = 0
+    check authMessage(handshake, remote.node.pubkey, authMsg, authMsgLen)
+    var res = result.transp.write(addr authMsg[0], authMsgLen)
 
-  let initialSize = handshake.expectedLength
-  var ackMsg = newSeqOfCap[byte](1024)
-  ackMsg.setLen(initialSize)
-  await result.socket.fullRecvInto(ackMsg)
-  var ret = handshake.decodeAckMessage(ackMsg)
-  if ret == AuthStatus.IncompleteError:
-    ackMsg.setLen(handshake.expectedLength)
-    await result.socket.fullRecvInto(addr ackMsg[initialSize],
-                                     len(ackMsg) - initialSize)
-    ret = handshake.decodeAckMessage(ackMsg)
-  check ret
+    let initialSize = handshake.expectedLength
+    var ackMsg = newSeqOfCap[byte](1024)
+    ackMsg.setLen(initialSize)
 
-  initSecretState(handshake, ^authMsg, ackMsg, result)
+    await result.transp.readExactly(addr ackMsg[0], len(ackMsg))
 
-  if handshake.remoteHPubkey != remote.node.pubKey:
-    raise newException(Exception, "Remote pubkey is wrong")
+    var ret = handshake.decodeAckMessage(ackMsg)
+    if ret == AuthStatus.IncompleteError:
+      ackMsg.setLen(handshake.expectedLength)
+      await result.transp.readExactly(addr ackMsg[initialSize],
+                                      len(ackMsg) - initialSize)
+      ret = handshake.decodeAckMessage(ackMsg)
+    check ret
 
-  discard result.hello(baseProtocolVersion, clienId,
-                     gCapabilities, uint(listenPort), myKeys.pubkey.getRaw())
+    initSecretState(handshake, ^authMsg, ackMsg, result)
 
-  var response = await result.nextMsg(p2p.hello, discardOthers = true)
+    # if handshake.remoteHPubkey != remote.node.pubKey:
+    #   raise newException(Exception, "Remote pubkey is wrong")
 
-  if not validatePubKeyInHello(response, remote.node.pubKey):
-    warn "Remote nodeId is not its public key" # XXX: Do we care?
+    discard result.hello(baseProtocolVersion, clienId, gCapabilities,
+                         uint(listenPort), myKeys.pubkey.getRaw())
 
-  connectionEstablished(result, response)
+    var response = await result.nextMsg(p2p.hello, discardOthers = true)
 
-proc rlpxConnectIncoming*(myKeys: KeyPair, listenPort: Port, address: IpAddress, s: AsyncSocket): Future[Peer] {.async.} =
+    if not validatePubKeyInHello(response, remote.node.pubKey):
+      warn "Remote nodeId is not its public key" # XXX: Do we care?
+
+    connectionEstablished(result, response)
+  except:
+    if not isNil(result.transp):
+      result.transp.close()
+
+proc rlpxAccept*(transp: StreamTransport,
+                 myKeys: KeyPair): Future[Peer] {.async.} =
   new result
-  result.socket = s
+  result.transp = transp
   var handshake = newHandshake({Responder})
   handshake.host = myKeys
 
-  let initialSize = handshake.expectedLength
-  var authMsg = newSeqOfCap[byte](1024)
-  authMsg.setLen(initialSize)
-  await s.fullRecvInto(authMsg)
-  var ret = handshake.decodeAuthMessage(authMsg)
-  if ret == AuthStatus.IncompleteError: # Eip8 auth message is likely
-    authMsg.setLen(handshake.expectedLength)
-    await s.fullRecvInto(addr authMsg[initialSize], len(authMsg) - initialSize)
-    ret = handshake.decodeAuthMessage(authMsg)
-  check ret
+  try:
+    let initialSize = handshake.expectedLength
+    var authMsg = newSeqOfCap[byte](1024)
+    authMsg.setLen(initialSize)
+    await transp.readExactly(addr authMsg[0], len(authMsg))
+    var ret = handshake.decodeAuthMessage(authMsg)
+    if ret == AuthStatus.IncompleteError: # Eip8 auth message is likely
+      authMsg.setLen(handshake.expectedLength)
+      await transp.readExactly(addr authMsg[initialSize],
+                               len(authMsg) - initialSize)
+      ret = handshake.decodeAuthMessage(authMsg)
+    check ret
 
-  var ackMsg: array[AckMessageMaxEIP8, byte]
-  var ackMsgLen: int
-  check handshake.ackMessage(ackMsg, ackMsgLen)
-  await s.send(addr ackMsg[0], ackMsgLen)
+    var ackMsg: array[AckMessageMaxEIP8, byte]
+    var ackMsgLen: int
+    check handshake.ackMessage(ackMsg, ackMsgLen)
+    var res = transp.write(addr ackMsg[0], ackMsgLen)
 
-  initSecretState(handshake, authMsg, ^ackMsg, result)
+    initSecretState(handshake, authMsg, ^ackMsg, result)
 
-  var response = await result.nextMsg(p2p.hello, discardOthers = true)
-  discard result.hello(baseProtocolVersion, clienId,
-                     gCapabilities, listenPort.uint, myKeys.pubkey.getRaw())
+    var response = await result.nextMsg(p2p.hello, discardOthers = true)
+    let listenPort = transp.localAddress().port
+    discard result.hello(baseProtocolVersion, clienId,
+                         gCapabilities, listenPort.uint, myKeys.pubkey.getRaw())
 
-  if validatePubKeyInHello(response, handshake.remoteHPubkey):
-    warn "Remote nodeId is not its public key" # XXX: Do we care?
+    if validatePubKeyInHello(response, handshake.remoteHPubkey):
+      warn "Remote nodeId is not its public key" # XXX: Do we care?
 
-  let port = Port(response.listenPort)
-  let address = Address(ip: address, tcpPort: port, udpPort: port)
-  result.remote = newNode(initEnode(handshake.remoteHPubkey, address))
+    let port = Port(response.listenPort)
+    let remote = transp.remoteAddress()
+    let address = Address(ip: remote.address, tcpPort: remote.port,
+                          udpPort: remote.port)
+    result.remote = newNode(initEnode(handshake.remoteHPubkey, address))
 
-  connectionEstablished(result, response)
+    connectionEstablished(result, response)
+  except:
+    transp.close()
 
 when isMainModule:
   import rlp
