@@ -14,7 +14,8 @@ requires "nim > 0.18.0",
          "eth_keys",
          "ranges",
          "stint",
-         "byteutils"
+         "byteutils",
+         "https://github.com/status-im/nim-asyncdispatch2"
 
 proc runTest(name: string, lang = "c") = exec "nim " & lang & " -r tests/" & name
 
