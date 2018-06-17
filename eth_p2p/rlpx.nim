@@ -82,6 +82,12 @@ var
   gDispatchers = initSet[Dispatcher]()
   devp2p: ProtocolInfo
 
+# The variables above are immutable RTTI information. We need to tell
+# Nim to not consider them GcSafe violations:
+template rlpxProtocols: auto = {.gcsafe.}: gProtocols
+template rlpxCapabilities: auto = {.gcsafe.}: gCapabilities
+template devp2pProtocolInfo: auto = {.gcsafe.}: devp2p
+
 # Dispatcher
 #
 
@@ -97,14 +103,14 @@ template totalThunks(d: Dispatcher): int =
   d.thunks.len
 
 template getThunk(d: Dispatcher, idx: int): MessageHandler =
-  protocols.thunks[idx]
+  rlpxProtocols.thunks[idx]
 
 proc describeProtocols(d: Dispatcher): string =
   result = ""
-  for i in 0 ..< gProtocols.len:
+  for i in 0 ..< rlpxProtocols.len:
     if d.protocolOffsets[i] != -1:
       if result.len != 0: result.add(',')
-      for c in gProtocols[i].name: result.add(c)
+      for c in rlpxProtocols[i].name: result.add(c)
 
 proc getDispatcher(otherPeerCapabilities: openarray[Capability]): Dispatcher =
   # XXX: sub-optimal solution until progress is made here:
@@ -112,12 +118,12 @@ proc getDispatcher(otherPeerCapabilities: openarray[Capability]): Dispatcher =
   # We should be able to find an existing dispatcher without allocating a new one
 
   new(result)
-  newSeq(result.protocolOffsets, gProtocols.len)
+  newSeq(result.protocolOffsets, rlpxProtocols.len)
 
   var nextUserMsgId = 0x10
 
-  for i in 0..<gProtocols.len:
-    let localProtocol = gProtocols[i]
+  for i in 0 ..< rlpxProtocols.len:
+    let localProtocol = rlpxProtocols[i]
 
     block findMatchingProtocol:
       for remoteCapability in otherPeerCapabilities:
@@ -138,11 +144,11 @@ proc getDispatcher(otherPeerCapabilities: openarray[Capability]): Dispatcher =
         dest[index + i] = src[i].thunk
 
     result.thunks = newSeq[MessageHandler](nextUserMsgId)
-    devp2p.messages.copyTo(result.thunks, 0)
+    devp2pProtocolInfo.messages.copyTo(result.thunks, 0)
 
-    for i in 0..<gProtocols.len:
+    for i in 0 ..< rlpxProtocols.len:
       if result.protocolOffsets[i] != -1:
-        gProtocols[i].messages.copyTo(result.thunks, result.protocolOffsets[i])
+        rlpxProtocols[i].messages.copyTo(result.thunks, result.protocolOffsets[i])
 
     gDispatchers.incl result
 
@@ -278,7 +284,7 @@ iterator typedParams(n: NimNode, skip = 0): (NimNode, NimNode) =
     let paramNodes = n.params[i]
     let paramType = paramNodes[^2]
 
-    for j in 0..<(paramNodes.len - 2):
+    for j in 0 ..< paramNodes.len - 2:
       yield (paramNodes[j], paramType)
 
 proc chooseFieldType(n: NimNode): NimNode =
@@ -288,9 +294,7 @@ proc chooseFieldType(n: NimNode): NimNode =
   ##
   ## For now, only openarray types are remapped to sequences.
   result = n
-  if n.kind == nnkBracketExpr and
-     n[0].kind == nnkIdent and
-     n[0].eqIdent("openarray"):
+  if n.kind == nnkBracketExpr and eqIdent(n[0], "openarray"):
     result = n.copyNimTree
     result[0] = newIdentNode("seq")
 
@@ -300,7 +304,7 @@ proc getState(peer: Peer, proto: ProtocolInfo): RootRef =
 template state*(connection: Peer, Protocol: typedesc): untyped =
   ## Returns the state object of a particular protocol for a
   ## particular connection.
-  cast[ref Protocol.State](connection.getState(Protocol.info))
+  cast[ref Protocol.State](connection.getState(Protocol.protocolInfo))
 
 macro rlpxProtocol*(protoIdentifier: untyped,
                     version: static[int],
@@ -335,13 +339,13 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     # Create a type actining as a pseudo-object representing the protocol (e.g. p2p)
     type `protoNameIdent`* = object
 
-    # The protocol run-time data is available as a pseudo-field (e.g. `p2p.info`)
-    template info*(P: type `protoNameIdent`): ProtocolInfo = `protocol`
+    # The protocol run-time data is available as a pseudo-field (e.g. `p2p.protocolInfo`)
+    template protocolInfo*(P: type `protoNameIdent`): ProtocolInfo = `protocol`
 
   for n in body:
     case n.kind
     of {nnkCall, nnkCommand}:
-      if n.len == 2 and n[0].kind == nnkIdent and n[0].eqIdent("nextID"):
+      if n.len == 2 and eqIdent(n[0], "nextID"):
         if n[1].kind == nnkIntLit:
           nextId = n[1].intVal
         else:
@@ -349,7 +353,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
       else:
         error(repr(n) & " is not a recognized call in RLPx protocol definitions", n)
     of nnkTypeSection:
-      if n.len == 1 and n[0][0].kind == nnkIdent and n[0][0].eqIdent("State"):
+      if n.len == 1 and eqIdent(n[0][0], "State"):
         stateType = genSym(nskType, protoName & "State")
         n[0][0] = stateType
         result.add n
@@ -361,8 +365,8 @@ macro rlpxProtocol*(protoIdentifier: untyped,
 
     of nnkProcDef:
       let
-        msgIdent = n.name.ident
-        msgName = n.name.strVal
+        msgIdent = n.name
+        msgName = $n.name
 
       var
         thunkName = newNilLit()
@@ -388,7 +392,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
           let paramNodes = n.params[i]
           let paramType = paramNodes[^2]
 
-          for j in 0 ..< (paramNodes.len-2):
+          for j in 0 ..< paramNodes.len - 2:
             var deserializedParam = genSym(nskLet)
 
             readParams.add quote do:
@@ -528,7 +532,7 @@ proc connectionEstablished(p: Peer, h: p2p.hello) =
   p.dispatcher = getDispatcher(h.capabilities)
   # p.id = h.nodeId
   p.connectionState = Connected
-  newSeq(p.protocolStates, gProtocols.len)
+  newSeq(p.protocolStates, rlpxProtocols.len)
   # XXX: initialize the sub-protocol states
 
 proc initSecretState(hs: var Handshake, authMsg, ackMsg: openarray[byte],
@@ -573,7 +577,7 @@ proc rlpxConnect*(remote: Node, myKeys: KeyPair,
     # if handshake.remoteHPubkey != remote.node.pubKey:
     #   raise newException(Exception, "Remote pubkey is wrong")
 
-    discard result.hello(baseProtocolVersion, clienId, gCapabilities,
+    discard result.hello(baseProtocolVersion, clienId, rlpxCapabilities,
                          uint(listenPort), myKeys.pubkey.getRaw())
 
     var response = await result.nextMsg(p2p.hello, discardOthers = true)
@@ -616,7 +620,7 @@ proc rlpxAccept*(transp: StreamTransport,
     var response = await result.nextMsg(p2p.hello, discardOthers = true)
     let listenPort = transp.localAddress().port
     discard result.hello(baseProtocolVersion, clienId,
-                         gCapabilities, listenPort.uint, myKeys.pubkey.getRaw())
+                         rlpxCapabilities, listenPort.uint, myKeys.pubkey.getRaw())
 
     if validatePubKeyInHello(response, handshake.remoteHPubkey):
       warn "Remote nodeId is not its public key" # XXX: Do we care?
@@ -653,4 +657,19 @@ when isMainModule:
 
   var p = Peer()
   discard p.bar(10, "test")
+
+  when false:
+    # The assignment below can be used to investigate if the RLPx procs
+    # are considered GcSafe. The short answer is that they aren't, because
+    # they dispatch into user code that might use the GC.
+    type
+      GcSafeRecvMsg = proc (peer: Peer):
+        Future[tuple[msgId: int, msgData: Rlp]] {.gcsafe.}
+
+      GcSafeAccept = proc (transp: StreamTransport, myKeys: KeyPair):
+        Future[Peer] {.gcsafe.}
+
+    var
+      recvMsgPtr: GcSafeRecvMsg = recvMsg
+      acceptPtr: GcSafeAccept = rlpxAccept
 
