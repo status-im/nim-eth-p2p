@@ -652,7 +652,7 @@ when isMainModule:
   var p = Peer()
   discard p.bar(10, "test")
 
-  when true:
+  when false:
     # The assignments below can be used to investigate if the RLPx procs
     # are considered GcSafe. The short answer is that they aren't, because
     # they dispatch into user code that might use the GC.
