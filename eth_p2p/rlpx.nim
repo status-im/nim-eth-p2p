@@ -73,7 +73,6 @@ type
 
 const
   baseProtocolVersion = 4
-  clienId = "Nimbus 0.1.0"
 
 # TODO: Usage of this variables causes GCSAFE problems.
 var
@@ -536,8 +535,8 @@ proc initSecretState(hs: var Handshake, authMsg, ackMsg: openarray[byte],
   initSecretState(secrets, p.secretsState)
   burnMem(secrets)
 
-proc rlpxConnect*(remote: Node, myKeys: KeyPair,
-                  listenPort: Port): Future[Peer] {.async.} =
+proc rlpxConnect*(remote: Node, myKeys: KeyPair, listenPort: Port,
+                  clientId: string): Future[Peer] {.async.} =
   new result
   result.remote = remote
   let ta = initTAddress(remote.node.address.ip, remote.node.address.tcpPort)
@@ -571,7 +570,7 @@ proc rlpxConnect*(remote: Node, myKeys: KeyPair,
     # if handshake.remoteHPubkey != remote.node.pubKey:
     #   raise newException(Exception, "Remote pubkey is wrong")
 
-    discard result.hello(baseProtocolVersion, clienId, rlpxCapabilities,
+    discard result.hello(baseProtocolVersion, clientId, rlpxCapabilities,
                          uint(listenPort), myKeys.pubkey.getRaw())
 
     var response = await result.nextMsg(p2p.hello, discardOthers = true)
@@ -584,8 +583,8 @@ proc rlpxConnect*(remote: Node, myKeys: KeyPair,
     if not isNil(result.transp):
       result.transp.close()
 
-proc rlpxAccept*(transp: StreamTransport,
-                 myKeys: KeyPair): Future[Peer] {.async.} =
+proc rlpxAccept*(transp: StreamTransport, myKeys: KeyPair,
+                 clientId: string): Future[Peer] {.async.} =
   new result
   result.transp = transp
   var handshake = newHandshake({Responder})
@@ -613,8 +612,9 @@ proc rlpxAccept*(transp: StreamTransport,
 
     var response = await result.nextMsg(p2p.hello, discardOthers = true)
     let listenPort = transp.localAddress().port
-    discard result.hello(baseProtocolVersion, clienId,
-                         rlpxCapabilities, listenPort.uint, myKeys.pubkey.getRaw())
+    discard result.hello(baseProtocolVersion, clientId,
+                         rlpxCapabilities, listenPort.uint,
+                         myKeys.pubkey.getRaw())
 
     if validatePubKeyInHello(response, handshake.remoteHPubkey):
       warn "Remote nodeId is not its public key" # XXX: Do we care?
@@ -669,4 +669,3 @@ when isMainModule:
       dispatchMsgPtr = dispatchMsg
       recvMsgPtr: GcSafeRecvMsg = recvMsg
       acceptPtr: GcSafeAccept = rlpxAccept
-

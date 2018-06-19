@@ -11,6 +11,8 @@ import sequtils, logging
 import eth_keys, asyncdispatch2, byteutils
 import eth_p2p/[discovery, kademlia, peer_pool, enode]
 
+const clientId = "nim-eth-p2p/0.0.1"
+
 addHandler(newConsoleLogger())
 
 proc startDiscoveryNode(privKey: PrivateKey, address: Address, bootnodes: seq[ENode]): Future[DiscoveryProtocol] {.async.} =
@@ -42,7 +44,9 @@ proc test() {.async.} =
   var nodeAddrs = newSeqOfCap[Address](nodeKeys.len)
   for i in 0 ..< nodeKeys.len: nodeAddrs.add(localAddress(20302 + i))
 
-  var nodes = await all(zip(nodeKeys, nodeAddrs).mapIt(startDiscoveryNode(it.a, it.b, @[bootENode])))
+  var nodes = await all(zip(nodeKeys, nodeAddrs).mapIt(
+    startDiscoveryNode(it.a, it.b, @[bootENode]))
+  )
   nodes.add(bootNode)
 
   for i in nodes:

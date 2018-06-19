@@ -18,13 +18,14 @@ type
     keyPair: KeyPair
     address: Address
     networkId: int
+    clientId: string
     discovery: DiscoveryProtocol
     peerPool: PeerPool
 
 proc processIncoming(server: StreamServer,
                      remote: StreamTransport): Future[void] {.async, gcsafe.} =
   var p2p = getUserData[P2PServer](server)
-  let peerfut = remote.rlpxAccept(p2p.keyPair)
+  let peerfut = remote.rlpxAccept(p2p.keyPair, p2p.clientId)
   yield peerfut
   if not peerfut.failed:
     let peer = peerfut.read()
@@ -35,16 +36,18 @@ proc processIncoming(server: StreamServer,
     remote.close()
 
 proc newP2PServer*(keyPair: KeyPair, address: Address, chainDb: AsyncChainDB,
-                   bootstrapNodes: openarray[ENode],
+                   bootstrapNodes: openarray[ENode], clientId: string,
                    networkId: int): P2PServer =
   result.new()
   result.chainDb = chainDb
   result.keyPair = keyPair
   result.address = address
+  result.clientId = clientId
   result.networkId = networkId
   result.discovery = newDiscoveryProtocol(keyPair.seckey, address,
                                           bootstrapNodes)
-  result.peerPool = newPeerPool(chainDb, networkId, keyPair, result.discovery)
+  result.peerPool = newPeerPool(chainDb, networkId, keyPair, result.discovery,
+                                clientId, address.tcpPort)
 
   let ta = initTAddress(address.ip, address.tcpPort)
   result.server = createStreamServer(ta, processIncoming, {ReuseAddr},
