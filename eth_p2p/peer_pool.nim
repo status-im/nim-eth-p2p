@@ -17,6 +17,7 @@ type
     keyPair: KeyPair
     networkId: int
     minPeers: int
+    clientId: string
     discovery: DiscoveryProtocol
     lastLookupTime: float
     connectedNodes: Table[Node, Peer]
@@ -33,14 +34,15 @@ const
   connectLoopSleepMs = 2000
 
 proc newPeerPool*(chainDb: AsyncChainDb, networkId: int, keyPair: KeyPair,
-                  discovery: DiscoveryProtocol, minPeers = 10): PeerPool =
+                  discovery: DiscoveryProtocol, clientId: string,
+                  listenPort = Port(30303), minPeers = 10): PeerPool =
   result.new()
   result.keyPair = keyPair
   result.minPeers = minPeers
   result.networkId = networkId
   result.discovery = discovery
   result.connectedNodes = initTable[Node, Peer]()
-  result.listenPort = Port(30303)
+  result.listenPort = listenPort
 
 template ensureFuture(f: untyped) = asyncCheck f
 
@@ -73,7 +75,7 @@ proc connect(p: PeerPool, remote: Node): Future[Peer] {.async.} =
     debug "Skipping ", remote, "; already connected to it"
     return nil
 
-  result = await remote.rlpxConnect(p.keyPair, p.listenPort)
+  result = await remote.rlpxConnect(p.keyPair, p.listenPort, p.clientId)
 
   # expected_exceptions = (
   #   UnreachablePeer, TimeoutError, PeerConnectionLost, HandshakeFailure)
