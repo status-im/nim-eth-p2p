@@ -29,4 +29,21 @@ proc test() {.async.} =
 
   doAssert(not peer.isNil)
 
+echo "Testing without Snappy"
 waitFor test()
+
+proc testSnappy() {.async.} =
+  let kp = newKeyPair()
+  let address = localAddress(20302)
+
+  let s = newP2PServer(kp, address, nil, [], clientId, 1, true)
+  s.start()
+
+  let n = newNode(initENode(kp.pubKey, address))
+  let peer = await rlpxConnect(n, newKeyPair(), Port(12345), clientId)
+
+  doAssert(not peer.isNil)
+
+echo "-------------------------------"
+echo "Testing with Snappy"
+waitFor testSnappy()

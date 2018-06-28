@@ -12,6 +12,7 @@ import macros, sets, algorithm, logging, hashes
 import rlp, ranges/[stackarrays, ptr_arith], eth_keys, ethereum_types,
        nimcrypto, asyncdispatch2
 import kademlia, discovery, auth, rlpxcrypt, enode
+import nimsnappyc
 
 type
   ConnectionState = enum
@@ -28,6 +29,7 @@ type
     connectionState: ConnectionState
     protocolStates: seq[RootRef]
     remote*: Node
+    snappy*: bool
 
   MessageHandler* = proc(x: Peer, data: var Rlp)
 
@@ -72,7 +74,8 @@ type
   MalformedMessageError* = object of Exception
 
 const
-  baseProtocolVersion = 4
+  baseProtocolVersion* = 4
+  snappyProtocolVersion* = 5
 
 # TODO: Usage of this variables causes GCSAFE problems.
 var
@@ -216,12 +219,27 @@ proc dispatchMsg(peer: Peer, msgId: int, msgData: var Rlp) =
 
   thunk(peer, msgData)
 
-proc send(p: Peer, data: BytesRange) {.async.} =
-  # var rlp = rlpFromBytes(data)
-  # echo "sending: ", rlp.read(int)
-  # echo "payload: ", rlp.inspect
-  var cipherText = encryptMsg(data, p.secretsState)
-  var res = await p.transp.write(cipherText)
+proc send(peer: Peer, data: BytesRange) {.async.} =
+  var rlp = rlpFromBytes(data)
+  when defined(debugPeer):
+    echo "Send, peer snappy: ", peer.snappy
+    echo "sending: ", rlp.read(int)
+    echo "payload: ", rlp.inspect
+
+  var cipherText: seq[byte]
+
+  if peer.snappy:
+    let maxCompressedLen = snappyMaxCompressedLength(data.len)
+    let compressed = snappyCompress(data.baseAddr, data.len)
+    when defined(debugPeer):
+      echo "uncompressed len: ", data.len
+      echo "Max compressed len: ", maxCompressedLen
+      echo "Compressed len: ", compressed.len
+    # cipherText = encryptMsg(compressed.toRange, peer.secretsState)
+    cipherText = encryptMsg(data, peer.secretsState)
+  else:
+    cipherText = encryptMsg(data, peer.secretsState)
+  var res = await peer.transp.write(cipherText)
 
 proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   ##  This procs awaits the next complete RLPx message in the TCP stream
@@ -249,8 +267,22 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
     return (-1, zeroBytesRlp)
 
   decryptedBytes.setLen(decryptedBytesCount)
-  var rlp = rlpFromBytes(decryptedBytes.toRange)
+  var rlp: Rlp
+  if peer.snappy:
+    when defined(debugPeer):
+      echo "snappyUncompressedLength: ", snappyUncompressedLength(decryptedBytes)
+    # let uncompressedBytes = snappyUncompress(decryptedBytes)
+    # rlp = rlpFromBytes(uncompressedBytes.toRange)
+    rlp = rlpFromBytes(decryptedBytes.toRange)
+  else:
+    rlp = rlpFromBytes(decryptedBytes.toRange)
   let msgId = rlp.read(int)
+
+  when defined(debugPeer):
+    echo "Recv, peer snappy: ", peer.snappy
+    echo "receiving: ", msgId
+    echo "payload: ", rlp.inspect
+
   return (msgId, rlp)
 
 proc nextMsg*(peer: Peer, MsgType: typedesc,
@@ -264,7 +296,8 @@ proc nextMsg*(peer: Peer, MsgType: typedesc,
 
   while true:
     var (nextMsgId, nextMsgData) = await peer.recvMsg()
-    # echo "got msg(", nextMsgId, "): ", nextMsgData.inspect
+    when defined(debugPeer):
+      echo "got msg(", nextMsgId, "): ", nextMsgData.inspect
     if nextMsgId == wantedId:
       return nextMsgData.read(MsgType)
     elif not discardOthers:
@@ -549,6 +582,7 @@ proc rlpxConnect*(remote: Node, myKeys: KeyPair, listenPort: Port,
     var authMsg: array[AuthMessageMaxEIP8, byte]
     var authMsgLen = 0
     check authMessage(handshake, remote.node.pubkey, authMsg, authMsgLen)
+
     var res = result.transp.write(addr authMsg[0], authMsgLen)
 
     let initialSize = handshake.expectedLength
@@ -570,9 +604,15 @@ proc rlpxConnect*(remote: Node, myKeys: KeyPair, listenPort: Port,
     # if handshake.remoteHPubkey != remote.node.pubKey:
     #   raise newException(Exception, "Remote pubkey is wrong")
 
-    discard result.hello(baseProtocolVersion, clientId, rlpxCapabilities,
+    discard result.hello(handshake.version, clientId, rlpxCapabilities,
                          uint(listenPort), myKeys.pubkey.getRaw())
 
+    if handshake.version.int >= snappyProtocolVersion:
+      result.snappy = true
+
+    when defined(debugPeer):
+      echo "rlpxConnect, result.snappy: ", result.snappy
+      echo "rlpxConnect, handshake protocol version: ", handshake.version
     var response = await result.nextMsg(p2p.hello, discardOthers = true)
 
     if not validatePubKeyInHello(response, remote.node.pubKey):
@@ -584,10 +624,10 @@ proc rlpxConnect*(remote: Node, myKeys: KeyPair, listenPort: Port,
       result.transp.close()
 
 proc rlpxAccept*(transp: StreamTransport, myKeys: KeyPair,
-                 clientId: string): Future[Peer] {.async.} =
+                 clientId: string, protocolVersion: uint = baseProtocolVersion): Future[Peer] {.async.} =
   new result
   result.transp = transp
-  var handshake = newHandshake({Responder})
+  var handshake = newHandshake({Responder}, protocolVersion.int)
   handshake.host = myKeys
 
   try:
@@ -609,6 +649,12 @@ proc rlpxAccept*(transp: StreamTransport, myKeys: KeyPair,
     var res = transp.write(addr ackMsg[0], ackMsgLen)
 
     initSecretState(handshake, authMsg, ^ackMsg, result)
+
+    result.snappy = protocolVersion >= snappyProtocolVersion.uint
+    when defined(debugPeer):
+      echo "rlpxAccept, given protocol version: ", protocolVersion
+      echo "rlpxAccept, handshake protocol version: ", handshake.version
+      echo "rlpxAccept, result.snappy: ", result.snappy
 
     var response = await result.nextMsg(p2p.hello, discardOthers = true)
     let listenPort = transp.localAddress().port

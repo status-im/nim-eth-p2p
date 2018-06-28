@@ -21,11 +21,12 @@ type
     clientId: string
     discovery: DiscoveryProtocol
     peerPool: PeerPool
+    protocolVersion: uint
 
 proc processIncoming(server: StreamServer,
                      remote: StreamTransport): Future[void] {.async, gcsafe.} =
   var p2p = getUserData[P2PServer](server)
-  let peerfut = remote.rlpxAccept(p2p.keyPair, p2p.clientId)
+  let peerfut = remote.rlpxAccept(p2p.keyPair, p2p.clientId, p2p.protocolVersion)
   yield peerfut
   if not peerfut.failed:
     let peer = peerfut.read()
@@ -37,7 +38,7 @@ proc processIncoming(server: StreamServer,
 
 proc newP2PServer*(keyPair: KeyPair, address: Address, chainDb: AsyncChainDB,
                    bootstrapNodes: openarray[ENode], clientId: string,
-                   networkId: int): P2PServer =
+                   networkId: int, useSnappy: bool = false): P2PServer =
   result.new()
   result.chainDb = chainDb
   result.keyPair = keyPair
@@ -52,6 +53,11 @@ proc newP2PServer*(keyPair: KeyPair, address: Address, chainDb: AsyncChainDB,
   let ta = initTAddress(address.ip, address.tcpPort)
   result.server = createStreamServer(ta, processIncoming, {ReuseAddr},
                                      udata = result)
+
+  if useSnappy:
+    result.protocolVersion = snappyProtocolVersion
+  else:
+    result.protocolVersion = baseProtocolVersion
 
 proc start*(s: P2PServer) =
   s.server.start()
