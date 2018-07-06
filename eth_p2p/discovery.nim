@@ -9,7 +9,7 @@
 #
 
 from strutils import nil
-import times, algorithm, logging
+import times, algorithm, chronicles
 import asyncdispatch2, eth_keys, ranges, stint, nimcrypto, rlp
 import kademlia, enode
 
@@ -133,7 +133,7 @@ proc sendNeighbours*(d: DiscoveryProtocol, node: Node, neighbours: seq[Node]) =
     block:
       let payload = rlp.encode((nodes, expiration()))
       let msg = pack(cmdNeighbours, payload, d.privkey)
-      debug ">>> neighbours to ", node, ": ", nodes
+      debug ">>> neighbours", to = node, neightbours = nodes
       d.send(node, msg)
       nodes.setLen(0)
 
@@ -231,11 +231,11 @@ proc receive(d: DiscoveryProtocol, a: Address, msg: Bytes) =
         else:
           echo "Unknown command: ", cmdId
       else:
-        debug "Received msg ", cmdId, " from ", a, " already expired"
+        debug "Received msg is expired", cmdId, "from" = a
     else:
-      error "Wrong public key from ", a
+      error "Wrong public key ", "from" = a
   else:
-    error "Wrong msg mac from ", a
+    error "Wrong msg mac", "from" = a
 
 proc processClient(transp: DatagramTransport,
                    raddr: TransportAddress): Future[void] {.async, gcsafe.} =
@@ -249,7 +249,7 @@ proc processClient(transp: DatagramTransport,
     let a = Address(ip: raddr.address, udpPort: raddr.port, tcpPort: raddr.port)
     proto.receive(a, buf)
   except:
-    error "receive failed: ", getCurrentExceptionMsg()
+    error "receive failed: " & getCurrentExceptionMsg()
 
 proc open*(d: DiscoveryProtocol) =
   let ta = initTAddress(d.address.ip, d.address.udpPort)

@@ -8,11 +8,14 @@
 #            MIT license (LICENSE-MIT)
 #
 
-import uri, logging, tables, hashes, times, algorithm, sets, sequtils, random
+import uri, tables, hashes, times, algorithm, sets, sequtils, random
 from strutils import parseInt
-import asyncdispatch2, eth_keys, stint, nimcrypto, enode
+import asyncdispatch2, eth_keys, stint, nimcrypto, chronicles, enode
 
 export sets # TODO: This should not be needed, but compilation fails otherwise
+
+logScope:
+  topic = "discovery"
 
 type
   KademliaProtocol* [Wire] = ref object
@@ -331,6 +334,7 @@ proc bond(k: KademliaProtocol, n: Node): Future[bool] {.async.} =
   # the remote remembers us.
   discard await k.waitPing(n)
 
+  echo "bonding completed successfully with"
   debug "bonding completed successfully with ", n
   k.updateRoutingTable(n)
   return true
@@ -352,7 +356,7 @@ proc lookup*(k: KademliaProtocol, nodeId: NodeId): Future[seq[Node]] {.async.} =
     k.wire.sendFindNode(remote, nodeId)
     var candidates = await k.waitNeighbours(remote)
     if candidates.len == 0:
-      debug "got no candidates from ", remote, ", returning"
+      debug "got no candidates, returning ", "from" = remote
       result = candidates
     else:
       # The following line:
@@ -361,12 +365,12 @@ proc lookup*(k: KademliaProtocol, nodeId: NodeId): Future[seq[Node]] {.async.} =
       # 2. Removes all previously seen nodes from candidates
       # 3. Deduplicates candidates
       candidates.keepItIf(not nodesSeen.containsOrIncl(it))
-      debug "got ", candidates.len, " new candidates"
+      debug "got new candidates", count = candidates.len
       let bonded = await all(candidates.mapIt(k.bond(it)))
       for i in 0 ..< bonded.len:
         if not bonded[i]: candidates[i] = nil
       candidates.keepItIf(not it.isNil)
-      debug "bonded with ", candidates.len, " candidates"
+      debug "bonded with candidates", count = candidates.len
       result = candidates
 
   proc excludeIfAsked(nodes: seq[Node]): seq[Node] =
@@ -385,7 +389,7 @@ proc lookup*(k: KademliaProtocol, nodeId: NodeId): Future[seq[Node]] {.async.} =
     sortByDistance(closest, nodeId, BUCKET_SIZE)
     nodesToAsk = excludeIfAsked(closest)
 
-  info "lookup finished for ", nodeId.toHex, ": ", closest
+  info "lookup finished", forNode = nodeId.toHex, closest
   result = closest
 
 proc lookupRandom*(k: KademliaProtocol): Future[seq[Node]] =
@@ -401,19 +405,19 @@ proc resolve*(k: KademliaProtocol, id: NodeId): Future[Node] {.async.} =
 proc bootstrap*(k: KademliaProtocol, bootstrapNodes: seq[Node]) {.async.} =
   let bonded = await all(bootstrapNodes.mapIt(k.bond(it)))
   if true notin bonded:
-    info "Failed to bond with bootstrap nodes "
+    info "Failed to bond with bootstrap nodes"
     return
   discard await k.lookupRandom()
 
 proc recvPong*(k: KademliaProtocol, n: Node, token: seq[byte]) =
-  debug "<<< pong from ", n
+  debug "<<< pong", "from" = n
   let pingid = token & @(n.node.pubkey.data)
   var future: Future[bool]
   if k.pongFutures.take(pingid, future):
     future.complete(true)
 
 proc recvPing*(k: KademliaProtocol, n: Node, msgHash: any) =
-  debug "<<< ping from ", n
+  debug "<<< ping", "from" = n
   k.updateRoutingTable(n)
   k.wire.sendPong(n, msgHash)
 
@@ -428,12 +432,12 @@ proc recvNeighbours*(k: KademliaProtocol, remote: Node, neighbours: seq[Node]) =
   ## done as part of node lookup, so the actual processing is left to the callback from
   ## neighbours_callbacks, which is added (and removed after it's done or timed out) in
   ## wait_neighbours().
-  debug "<<< neighbours from ", remote, ": ", neighbours
+  debug "<<< neighbours", "from" = remote, neighbours
   let cb = k.neighboursCallbacks.getOrDefault(remote)
   if not cb.isNil:
     cb(neighbours)
   else:
-    debug "unexpected neighbours from ", remote, ", probably came too late"
+    debug "unexpected neighbours, probably came too late", "from" = remote
 
 proc recvFindNode*(k: KademliaProtocol, remote: Node, nodeId: NodeId) =
   if remote notin k.routing:
@@ -449,10 +453,10 @@ proc recvFindNode*(k: KademliaProtocol, remote: Node, nodeId: NodeId) =
 
 proc randomNodes*(k: KademliaProtocol, count: int): seq[Node] =
   var count = count
-  let sz = k.routing.len
-  if count > sz:
-    warn  "Cannot get ", count, " nodes as RoutingTable contains only ", sz, " nodes"
-    count = sz
+  let availableNodes = k.routing.len
+  if count > availableNodes:
+    warn  "Cannot get enough nodes", requestedNodes = count, availableNodes
+    count = availableNodes
 
   result = newSeqOfCap[Node](count)
   var seen = initSet[Node]()
