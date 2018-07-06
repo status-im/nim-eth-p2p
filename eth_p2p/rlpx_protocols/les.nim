@@ -56,62 +56,70 @@ rlpxProtocol les, 2:
                 values: openarray[KeyValuePair], announceType: uint) =
     discard
 
-  proc getBlockHeaders(p: Peer, reqID, BV: uint, req: BlocksRequest) =
-    discard
+  requestResponse:
+    proc getBlockHeaders(p: Peer, BV: uint, req: BlocksRequest) =
+      discard
 
-  proc blockHeaders(p: Peer, reqID, BV: uint, blocks: openarray[BlockHeaders]) =
-    discard
+    proc blockHeaders(p: Peer, BV: uint, blocks: openarray[BlockHeaders]) =
+      discard
 
   ## On-damand data retrieval
   ##
 
-  proc getBlockBodies(p: Peer, reqID: uint, blocks: openarray[KeccakHash]) =
-    discard
+  requestResponse:
+    proc getBlockBodies(p: Peer, blocks: openarray[KeccakHash]) =
+      discard
 
-  proc blockBodies(p: Peer, reqID, BV: uint, bodies: openarray[BlockBody]) =
-    discard
+    proc blockBodies(p: Peer, BV: uint, bodies: openarray[BlockBody]) =
+      discard
 
-  proc getReceipts(p: Peer, reqID: uint, hashes: openarray[KeccakHash]) =
-    discard
+  requestResponse:
+    proc getReceipts(p: Peer, hashes: openarray[KeccakHash]) =
+      discard
 
-  proc receipts(p: Peer, reqID, BV: uint, receipts: openarray[Receipt]) =
-    discard
+    proc receipts(p: Peer, BV: uint, receipts: openarray[Receipt]) =
+      discard
 
-  proc getProofs(p: Peer, reqID: uint, proofs: openarray[ProofRequest]) =
-    discard
+  requestResponse:
+    proc getProofs(p: Peer, proofs: openarray[ProofRequest]) =
+      discard
 
-  proc proofs(p: Peer, reqID, BV: uint, proofs: openarray[Blob]) =
-    discard
+    proc proofs(p: Peer, BV: uint, proofs: openarray[Blob]) =
+      discard
 
-  proc getContractCodes(p: Peer, reqID: uint, requests: seq[ContractCodeRequest]) =
-    discard
+  requestResponse:
+    proc getContractCodes(p: Peer, requests: seq[ContractCodeRequest]) =
+      discard
 
-  proc contractCodes(p: Peer, reqID, BV: uint, results: seq[Blob]) =
-    discard
+    proc contractCodes(p: Peer, BV: uint, results: seq[Blob]) =
+      discard
 
   nextID 15
 
-  proc getHeaderProofs(p: Peer, reqID: uint, requests: openarray[HeaderProofRequest]) =
-    discard
+  requestResponse:
+    proc getHeaderProofs(p: Peer, requests: openarray[HeaderProofRequest]) =
+      discard
 
-  proc headerProof(p: Peer, reqID, BV: uint, proofs: openarray[Blob]) =
-    discard
+    proc headerProof(p: Peer, BV: uint, proofs: openarray[Blob]) =
+      discard
 
-  proc getHelperTrieProofs(p: Peer, reqId: uint, requests: openarray[HelperTrieProofRequest]) =
-    discard
+  requestResponse:
+    proc getHelperTrieProofs(p: Peer, requests: openarray[HelperTrieProofRequest]) =
+      discard
 
-  proc helperTrieProof(p: Peer, reqId, BV: uint, nodes: seq[Blob], auxData: seq[Blob]) =
-    discard
+    proc helperTrieProof(p: Peer, BV: uint, nodes: seq[Blob], auxData: seq[Blob]) =
+      discard
 
   ## Transaction relaying and status retrieval
   ##
 
-  proc sendTxV2(p: Peer, reqId: uint, transactions: openarray[Transaction]) =
-    discard
+  requestResponse:
+    proc sendTxV2(p: Peer, transactions: openarray[Transaction]) =
+      discard
 
-  proc getTxStatus(p: Peer, reqId: uint, transactions: openarray[Transaction]) =
-    discard
+    proc getTxStatus(p: Peer, transactions: openarray[Transaction]) =
+      discard
 
-  proc txStatus(p: Peer, reqId, BV: uint, transactions: openarray[TransactionStatusMsg]) =
-    discard
+    proc txStatus(p: Peer, BV: uint, transactions: openarray[TransactionStatusMsg]) =
+      discard
 

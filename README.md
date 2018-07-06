@@ -117,9 +117,11 @@ There are few things to note in the above example:
    matching the parameter names of the message. If the messages has `openarray`
    params, these will be remapped to `seq` types.
 
-By default, `nextMsg` will still automatically dispatch all messages different
-from the awaited one, but you can prevent this behavior by specifying the extra
-flag `discardOthers = true`.
+The future returned by `nextMsg` will be resolved only after the handler of the
+designated message has been fully executed (so you can count on any side effects
+produced by the handler to have taken place). If there are multiple outstanding
+calls to `nextMsg`, they will complete together. Any other messages received in
+the meantime will still be dispatched to their respective handlers.
 
 ### Checking the other peer's supported sub-protocols
 

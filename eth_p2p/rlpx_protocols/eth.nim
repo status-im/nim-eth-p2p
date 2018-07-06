@@ -23,6 +23,8 @@ type
     body {.rlpInline.}: BlockBody
 
 rlpxProtocol eth, 63:
+  useRequestIds = false
+
   proc status(p: Peer, protocolVersion, networkId, td: P,
               bestHash, genesisHash: KeccakHash) =
     discard
@@ -33,32 +35,36 @@ rlpxProtocol eth, 63:
   proc transactions(p: Peer, transactions: openarray[Transaction]) =
     discard
 
-  proc getBlockHeaders(p: Peer, hash: BlocksRequest) =
-    discard
+  requestResponse:
+    proc getBlockHeaders(p: Peer, hash: BlocksRequest) =
+      discard
 
-  proc blockHeaders(p: Peer, hashes: openarray[BlockHeader]) =
-    discard
+    proc blockHeaders(p: Peer, hashes: openarray[BlockHeader]) =
+      discard
 
-  proc getBlockBodies(p: Peer, hashes: openarray[KeccakHash]) =
-    discard
+  requestResponse:
+    proc getBlockBodies(p: Peer, hashes: openarray[KeccakHash]) =
+      discard
 
-  proc blockBodies(p: Peer, blocks: openarray[BlockBody]) =
-    discard
+    proc blockBodies(p: Peer, blocks: openarray[BlockBody]) =
+      discard
 
   proc newBlock(p: Peer, bh: NewBlockAnnounce, totalDificulty: P) =
     discard
 
   nextID 13
 
-  proc getNodeData(p: Peer, hashes: openarray[KeccakHash]) =
-    discard
+  requestResponse:
+    proc getNodeData(p: Peer, hashes: openarray[KeccakHash]) =
+      discard
 
-  proc nodeData(p: Peer, data: openarray[Blob]) =
-    discard
+    proc nodeData(p: Peer, data: openarray[Blob]) =
+      discard
 
-  proc getReceipts(p: Peer, hashes: openarray[KeccakHash]) =
-    discard
+  requestResponse:
+    proc getReceipts(p: Peer, hashes: openarray[KeccakHash]) =
+      discard
 
-  proc receipts(p: Peer, receipts: openarray[Receipt]) =
-    discard
+    proc receipts(p: Peer, receipts: openarray[Receipt]) =
+      discard
 
