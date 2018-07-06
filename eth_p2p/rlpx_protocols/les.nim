@@ -9,7 +9,7 @@
 #
 
 import
-  rlp/types, rlpx, ethereum_types
+  rlp/types, rlpx, eth_common
 
 type
   ProofRequest* = object

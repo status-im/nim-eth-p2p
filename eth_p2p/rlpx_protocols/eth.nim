@@ -9,7 +9,7 @@
 #
 
 import
-  rlp/types, stint, rlpx, ethereum_types
+  rlp/types, stint, rlpx, eth_common
 
 type
   P = UInt256
