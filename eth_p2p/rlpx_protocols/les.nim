@@ -9,7 +9,7 @@
 #
 
 import
-  rlp/types, rlpx, eth_common
+  rlp/types, rlpx, eth_common, times
 
 type
   ProofRequest* = object
@@ -40,7 +40,78 @@ type
     status*: TransactionStatus
     data*: Blob
 
+  PeerState = object
+    buffer: int
+    lastRequestTime: float
+    reportedTotalDifficulty: Difficulty
+
+  KeyValuePair = object
+    key: string
+    value: Rlp
+
+const
+  maxHeadersFetch = 192
+  maxBodiesFetch = 32
+  maxReceiptsFetch = 128
+  maxCodeFetch = 64
+  maxProofsFetch = 64
+  maxHeaderProofsFetch = 64
+
+# Handshake properties:
+# https://github.com/zsfelfoldi/go-ethereum/wiki/Light-Ethereum-Subprotocol-(LES)
+const
+  keyProtocolVersion = "protocolVersion"
+    ## P: is 1 for the LPV1 protocol version.
+
+  keyNetworkId = "networkId"
+    ## P: should be 0 for testnet, 1 for mainnet.
+
+  keyHeadTotalDifficulty = "headTd"
+    ## P: Total Difficulty of the best chain.
+    ## Integer, as found in block header.
+
+  keyHeadHash = "headHash"
+    ## B_32: the hash of the best (i.e. highest TD) known block.
+
+  keyHeadNumber = "headNum"
+    ## P: the number of the best (i.e. highest TD) known block.
+
+  keyGenesisHash = "genesisHash"
+    ## B_32: the hash of the Genesis block.
+
+  keyServeHeaders = "serveHeaders"
+    ## (optional, no value)
+    ## present if the peer can serve header chain downloads.
+
+  keyServeChainSince = "serveChainSince"
+    ## P (optional)
+    ## present if the peer can serve Body/Receipts ODR requests
+    ## starting from the given block number.
+
+  keyServeStateSince = "serveStateSince"
+    ## P (optional):
+    ## present if the peer can serve Proof/Code ODR requests
+    ## starting from the given block number.
+
+  keyRelaysTransactions = "txRelay"
+    ## (optional, no value)
+    ## present if the peer can relay transactions to the ETH network.
+
+  keyFlowControlBL = "flowControl/BL"
+  keyFlowControlMRC = "flowControl/MRC"
+  keyFlowControlMRR = "flowControl/MRR"
+    ## see Client Side Flow Control:
+    ## https://github.com/zsfelfoldi/go-ethereum/wiki/Client-Side-Flow-Control-model-for-the-LES-protocol
+
+const
+  rechargeRate = 0.3
+
+proc getPeerWithNewestChain(pool: PeerPool): Peer =
+  discard
+
 rlpxProtocol les, 2:
+
+  type State = PeerState
 
   ## Handshake
   ##
@@ -52,8 +123,11 @@ rlpxProtocol les, 2:
   ##
 
   proc announce(p: Peer, headHash: KeccakHash,
-                headNumber, headTd, reorgDepth: P,
-                values: openarray[KeyValuePair], announceType: uint) =
+                headNumber: BlockNumber,
+                headTotalDifficulty: Difficulty,
+                reorgDepth: BlockNumber,
+                values: openarray[KeyValuePair],
+                announceType: uint) =
     discard
 
   requestResponse:
