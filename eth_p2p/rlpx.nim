@@ -391,7 +391,7 @@ proc resolveResponseFuture(peer: Peer, msgId: int, msg: pointer, reqId: int) =
     for req in outstandingReqs:
       if not req.future.finished: break
       inc expiredRequests
-    outstandingReqs.shrink(fromFront = expiredRequests)
+    outstandingReqs.shrink(fromFirst = expiredRequests)
     if outstandingReqs.len > 0:
       let oldestReq = outstandingReqs.popFirst
       assert oldestReq.reqId == -1
@@ -422,7 +422,7 @@ proc resolveResponseFuture(peer: Peer, msgId: int, msg: pointer, reqId: int) =
         if idx != outstandingReqs.len - 1:
           req = outstandingReqs.popLast
         else:
-          outstandingReqs.shrink(fromEnd = 1)
+          outstandingReqs.shrink(fromLast = 1)
           # This was the last item, so we don't have any
           # more work to do:
           return
@@ -434,7 +434,7 @@ proc resolveResponseFuture(peer: Peer, msgId: int, msg: pointer, reqId: int) =
         if idx != outstandingReqs.len - 1:
           req = outstandingReqs.popLast
         else:
-          outstandingReqs.shrink(fromEnd = 1)
+          outstandingReqs.shrink(fromLast = 1)
         return
 
       inc idx
