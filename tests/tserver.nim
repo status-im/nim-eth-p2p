@@ -9,7 +9,7 @@
 
 import sequtils
 import eth_keys, asyncdispatch2
-import eth_p2p/[discovery, kademlia, enode, rlpx]
+import eth_p2p
 
 const clientId = "nim-eth-p2p/0.0.1"
 
@@ -18,13 +18,16 @@ proc localAddress(port: int): Address =
   result = Address(udpPort: port, tcpPort: port, ip: parseIpAddress("127.0.0.1"))
 
 proc test() {.async.} =
-  let kp = newKeyPair()
-  let address = localAddress(20301)
+  let node1Keys = newKeyPair()
+  let node1Address = localAddress(30303)
+  var node1 = newEthereumNode(node1Keys, node1Address, 1, nil)
+  node1.startListening()
 
-  let s = connectToNetwork(kp, address, nil, [], clientId, 1)
+  let node2Keys = newKeyPair()
+  var node2 = newEthereumNode(node2Keys, localAddress(30304), 1, nil)
 
-  let n = newNode(initENode(kp.pubKey, address))
-  let peer = await rlpxConnect(n, newKeyPair(), Port(1234), clientId)
+  let node1AsRemote = newNode(initENode(node1Keys.pubKey, node1Address))
+  let peer = await node2.rlpxConnect(node1AsRemote)
 
   doAssert(not peer.isNil)
 

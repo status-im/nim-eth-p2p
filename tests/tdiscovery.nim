@@ -9,7 +9,7 @@
 
 import sequtils, logging
 import eth_keys, asyncdispatch2, byteutils
-import eth_p2p/[discovery, kademlia, rlpx, enode]
+import eth_p2p/[discovery, kademlia, enode]
 
 const clientId = "nim-eth-p2p/0.0.1"
 
