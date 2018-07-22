@@ -9,14 +9,21 @@
 #
 
 import
-  rlp/types, rlpx, eth_common, times
+  times,
+  asyncdispatch2, rlp, eth_common/eth_types,
+  ../../eth_p2p
 
 type
   ProofRequest* = object
     blockHash*: KeccakHash
     accountKey*: Blob
     key*: Blob
-    fromLevel*: UInt256
+    fromLevel*: uint
+
+  HeaderProofRequest* = object
+    chtNumber*: uint
+    blockNumber*: uint
+    fromLevel*: uint
 
   ContractCodeRequest* = object
     blockHash*: KeccakHash
@@ -47,7 +54,7 @@ type
 
   KeyValuePair = object
     key: string
-    value: Rlp
+    value: Blob
 
 const
   maxHeadersFetch = 192
@@ -122,7 +129,8 @@ rlpxProtocol les, 2:
   ## Header synchronisation
   ##
 
-  proc announce(p: Peer, headHash: KeccakHash,
+  proc announce(p: Peer,
+                headHash: KeccakHash,
                 headNumber: BlockNumber,
                 headTotalDifficulty: Difficulty,
                 reorgDepth: BlockNumber,
@@ -134,7 +142,7 @@ rlpxProtocol les, 2:
     proc getBlockHeaders(p: Peer, BV: uint, req: BlocksRequest) =
       discard
 
-    proc blockHeaders(p: Peer, BV: uint, blocks: openarray[BlockHeaders]) =
+    proc blockHeaders(p: Peer, BV: uint, blocks: openarray[BlockHeader]) =
       discard
 
   ## On-damand data retrieval
@@ -171,7 +179,7 @@ rlpxProtocol les, 2:
   nextID 15
 
   requestResponse:
-    proc getHeaderProofs(p: Peer, requests: openarray[HeaderProofRequest]) =
+    proc getHeaderProofs(p: Peer, requests: openarray[ProofRequest]) =
       discard
 
     proc headerProof(p: Peer, BV: uint, proofs: openarray[Blob]) =

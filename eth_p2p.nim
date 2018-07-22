@@ -16,28 +16,28 @@ import
   eth_p2p/[kademlia, discovery, auth, rlpxcrypt, enode]
 
 export
-  enode, kademlia
+  enode, kademlia, options
 
 type
   EthereumNode* = ref object
-    networkId*: int
+    networkId*: uint
     chain*: AbstractChainDB
     clientId*: string
-    connectionState: ConnectionState
-    keys: KeyPair
-    address: Address
+    connectionState*: ConnectionState
+    keys*: KeyPair
+    address*: Address
     rlpxCapabilities: seq[Capability]
     rlpxProtocols: seq[ProtocolInfo]
     listeningServer: StreamServer
     protocolStates: seq[RootRef]
     discovery: DiscoveryProtocol
-    peerPool: PeerPool
+    peerPool*: PeerPool
 
   Peer* = ref object
     transp: StreamTransport
     dispatcher: Dispatcher
     nextReqId: int
-    network: EthereumNode
+    network*: EthereumNode
     secretsState: SecretState
     connectionState: ConnectionState
     remote*: Node
@@ -53,7 +53,7 @@ type
   PeerPool* = ref object
     network: EthereumNode
     keyPair: KeyPair
-    networkId: int
+    networkId: uint
     minPeers: int
     clientId: string
     discovery: DiscoveryProtocol
@@ -265,7 +265,10 @@ proc cmp*(lhs, rhs: ProtocolInfo): int {.inline.} =
   return 0
 
 proc messagePrinter[MsgType](msg: pointer): string =
-  result = $(cast[ptr MsgType](msg)[])
+  result = ""
+  # TODO: uncommenting the line below increases the compile-time
+  # tremendously (for reasons not yet known)
+  # result = $(cast[ptr MsgType](msg)[])
 
 proc nextMsgResolver[MsgType](msgData: Rlp, future: FutureBase) =
   var reader = msgData
@@ -343,7 +346,7 @@ proc sendMsg(p: Peer, data: BytesRange) {.async.} =
   var cipherText = encryptMsg(data, p.secretsState)
   discard await p.transp.write(cipherText)
 
-proc registerRequest(peer: Peer,
+proc registerRequest*(peer: Peer,
                      timeout: int,
                      responseFuture: FutureBase,
                      responseMsgId: int): int =
@@ -615,6 +618,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     sendMsg = bindSym "sendMsg"
     startList = bindSym "startList"
     writeMsgId = bindSym "writeMsgId"
+    getState = bindSym "getState"
 
   # By convention, all Ethereum protocol names must be abbreviated to 3 letters
   assert protoName.len == 3
@@ -624,12 +628,18 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     ## the helpers for accessing the peer and network protocol states.
     userHandlerProc.addPragma newIdentNode"async"
 
+    # We allow the user handler to use `openarray` params, but we turn
+    # those into sequences to make the `async` pragma happy.
+    for i in 1 ..< userHandlerProc.params.len:
+      var param = userHandlerProc.params[i]
+      param[^2] = chooseFieldType(param[^2])
+
     # Define local accessors for the peer and the network protocol states
     # inside each user message handler proc (e.g. peer.state.foo = bar)
     if stateType != nil:
       var localStateAccessor = quote:
         template state(p: `Peer`): ref `stateType` =
-          cast[ref `stateType`](p.getState(`protocol`))
+          cast[ref `stateType`](`getState`(p, `protocol`))
 
       userHandlerProc.body.insert 0, localStateAccessor
 
@@ -929,6 +939,9 @@ macro rlpxProtocol*(protoIdentifier: untyped,
       discard addMsgHandler(nextId, n)
       inc nextId
 
+    of nnkCommentStmt:
+      discard
+
     else:
       macros.error("illegal syntax in a RLPx protocol definition", n)
 
@@ -971,7 +984,7 @@ rlpxProtocol p2p, 0:
   proc pong(peer: Peer) =
     discard
 
-proc disconnect(peer: Peer, reason: DisconnectionReason) {.async.} =
+proc disconnect*(peer: Peer, reason: DisconnectionReason) {.async.} =
   await peer.sendDisconnectMsg(reason)
   # TODO: Any other clean up required?
 
@@ -1138,7 +1151,7 @@ const
   connectLoopSleepMs = 2000
 
 proc newPeerPool*(network: EthereumNode,
-                  chainDb: AbstractChainDB, networkId: int, keyPair: KeyPair,
+                  chainDb: AbstractChainDB, networkId: uint, keyPair: KeyPair,
                   discovery: DiscoveryProtocol, clientId: string,
                   listenPort = Port(30303), minPeers = 10): PeerPool =
   new result
@@ -1308,7 +1321,7 @@ template addCapability*(n: var EthereumNode, Protocol: type) =
 
 proc newEthereumNode*(keys: KeyPair,
                       address: Address,
-                      networkId: int,
+                      networkId: uint,
                       chain: AbstractChainDB,
                       clientId = clientId,
                       addAllCapabilities = true): EthereumNode =
@@ -1338,17 +1351,17 @@ proc processIncoming(server: StreamServer,
          $remote.remoteAddress()
     remote.close()
 
-proc startListening*(node: var EthereumNode) =
+proc startListening*(node: EthereumNode) =
   let ta = initTAddress(node.address.ip, node.address.tcpPort)
   if node.listeningServer == nil:
     node.listeningServer = createStreamServer(ta, processIncoming,
                                               {ReuseAddr},
-                                              udata = addr(node))
+                                              udata = unsafeAddr(node))
   node.listeningServer.start()
 
-proc connectToNetwork*(node: var EthereumNode,
-                       bootstrapNodes: openarray[ENode],
-                       startListening = true) =
+proc connectToNetwork*(node: EthereumNode,
+                       bootstrapNodes: seq[ENode],
+                       startListening = true) {.async.} =
   assert node.connectionState == ConnectionState.None
 
   node.connectionState = Connecting
@@ -1361,7 +1374,7 @@ proc connectToNetwork*(node: var EthereumNode,
                               node.clientId, node.address.tcpPort)
 
   if startListening:
-    node.startListening()
+    eth_p2p.startListening(node)
 
   node.protocolStates.newSeq(rlpxProtocols.len)
   for p in node.rlpxProtocols:
@@ -1371,8 +1384,18 @@ proc connectToNetwork*(node: var EthereumNode,
   if startListening:
     node.listeningServer.start()
 
-proc stopListening*(s: EthereumNode) =
-  s.listeningServer.stop()
+  node.discovery.open()
+  await node.discovery.bootstrap()
+  await node.peerPool.maybeConnectToMorePeers()
+
+  node.peerPool.start()
+
+proc stopListening*(node: EthereumNode) =
+  node.listeningServer.stop()
+
+iterator peers*(node: EthereumNode): Peer =
+  for remote, peer in node.peerPool.connectedNodes:
+    yield peer
 
 when isMainModule:
   import rlp, strformat
