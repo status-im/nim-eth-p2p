@@ -9,7 +9,8 @@
 #
 
 import
-  tables, deques, macros, sets, algorithm, hashes, times, random, options,
+  tables, deques, macros, sets, algorithm, hashes, times,
+  random, options, sequtils,
   asyncdispatch2, asyncdispatch2/timer,
   rlp, ranges/[stackarrays, ptr_arith], nimcrypto, chronicles,
   eth_keys, eth_common,
@@ -488,7 +489,7 @@ proc waitSingleMsg(peer: Peer, MsgType: type): Future[MsgType] {.async.} =
     if nextMsgId == wantedId:
       return nextMsgData.read(MsgType)
 
-proc nextMsg*(peer: Peer, MsgType: type): Future[MsgType] {.async.} =
+proc nextMsg*(peer: Peer, MsgType: type): Future[MsgType] =
   ## This procs awaits a specific RLPx message.
   ## Any messages received while waiting will be dispatched to their
   ## respective handlers. The designated message handler will also run
@@ -542,10 +543,11 @@ template supports*(peer: Peer, Protocol: type): bool =
   ## Checks whether a Peer supports a particular protocol
   peer.dispatcher.protocolOffsets[Protocol.protocolInfo.index] != -1
 
-template state*(connection: Peer, Protocol: type): untyped =
+template state*(peer: Peer, Protocol: type): untyped =
   ## Returns the state object of a particular protocol for a
   ## particular connection.
-  cast[ref Protocol.State](connection.getState(Protocol.protocolInfo))
+  bind getState
+  cast[ref Protocol.State](getState(peer, Protocol.protocolInfo))
 
 proc getNetworkState(peer: Peer, proto: ProtocolInfo): RootRef =
   peer.network.protocolStates[proto.index]
@@ -985,8 +987,11 @@ rlpxProtocol p2p, 0:
     discard
 
 proc disconnect*(peer: Peer, reason: DisconnectionReason) {.async.} =
-  await peer.sendDisconnectMsg(reason)
-  # TODO: Any other clean up required?
+  if peer.connectionState notin {Disconnecting, Disconnected}:
+    peer.connectionState = Disconnecting
+    await peer.sendDisconnectMsg(reason)
+    peer.connectionState = Disconnected
+    # TODO: Any other clean up required?
 
 template `^`(arr): auto =
   # passes a stack array with a matching `arrLen`
@@ -1396,6 +1401,30 @@ proc stopListening*(node: EthereumNode) =
 iterator peers*(node: EthereumNode): Peer =
   for remote, peer in node.peerPool.connectedNodes:
     yield peer
+
+iterator peers*(node: EthereumNode, Protocol: type): Peer =
+  for peer in node.peers:
+    if peer.supports(Protocol):
+      yield peer
+
+iterator randomPeers*(node: EthereumNode, maxPeers: int): Peer =
+  # TODO: this can be implemented more efficiently
+
+  # XXX: this doesn't compile, why?
+  # var peer = toSeq node.peers
+  var peers = newSeqOfCap[Peer](node.peerPool.connectedNodes.len)
+  for peer in node.peers: peers.add(peer)
+
+  shuffle(peers)
+  for i in 0 ..< min(maxPeers, peers.len):
+    yield peers[i]
+
+proc randomPeer*(node: EthereumNode): Peer =
+  let peerIdx = random(node.peerPool.connectedNodes.len)
+  var i = 0
+  for peer in node.peers:
+    if i == peerIdx: return peer
+    inc i
 
 when isMainModule:
   import rlp, strformat
