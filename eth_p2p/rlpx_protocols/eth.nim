@@ -8,6 +8,9 @@
 #            MIT license (LICENSE-MIT)
 #
 
+## This module implements the Ethereum Wire Protocol:
+## https://github.com/ethereum/wiki/wiki/Ethereum-Wire-Protocol
+
 import
   random,
   asyncdispatch2, rlp, stint, eth_common,
@@ -245,6 +248,9 @@ proc obtainsBlocksFromPeer(peer: Peer, syncCtx: SyncContext) {.async.} =
     syncCtx.handleLostPeer()
 
 proc fastBlockchainSync*(node: EthereumNode): Future[SyncStatus] {.async.} =
+  ## Code for the fast blockchain sync procedure:
+  ## https://github.com/ethereum/wiki/wiki/Parallel-Block-Downloads
+  ## https://github.com/ethereum/go-ethereum/pull/1889
   var
     bestBlockDifficulty: DifficultyInt = 0.stuint(256)
     bestPeer: Peer = nil
