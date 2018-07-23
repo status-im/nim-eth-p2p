@@ -25,7 +25,7 @@ type
     syncing: bool
 
   PeerState = object
-    reportedTotalDifficulty: Difficulty
+    reportedTotalDifficulty: DifficultyInt
     latestBlockHash: KeccakHash
 
 const
@@ -41,7 +41,7 @@ rlpxProtocol eth, 63:
 
   proc status(peer: Peer,
               protocolVersion, networkId: uint,
-              totalDifficulty: Difficulty,
+              totalDifficulty: DifficultyInt,
               bestHash, genesisHash: KeccakHash) =
     # verify that the peer is on the same chain:
     if peer.network.networkId != networkId or
@@ -100,7 +100,7 @@ rlpxProtocol eth, 63:
 
     proc blockBodies(peer: Peer, blocks: openarray[BlockBody])
 
-  proc newBlock(peer: Peer, bh: NewBlockAnnounce, totalDifficulty: Difficulty) =
+  proc newBlock(peer: Peer, bh: NewBlockAnnounce, totalDifficulty: DifficultyInt) =
     discard
 
   nextID 13
@@ -130,7 +130,7 @@ proc fastBlockchainSync*(node: EthereumNode) {.async.} =
   discard await all(requests)
 
   # 2. find out what is the block with best total difficulty
-  var bestBlockDifficulty: Difficulty = 0.stuint(256)
+  var bestBlockDifficulty: DifficultyInt = 0.stuint(256)
   for req in requests:
     if req.read.isNone: continue
     for header in req.read.get.headers:

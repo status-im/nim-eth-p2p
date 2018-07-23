@@ -50,7 +50,7 @@ type
   PeerState = object
     buffer: int
     lastRequestTime: float
-    reportedTotalDifficulty: Difficulty
+    reportedTotalDifficulty: DifficultyInt
 
   KeyValuePair = object
     key: string
@@ -132,7 +132,7 @@ rlpxProtocol les, 2:
   proc announce(p: Peer,
                 headHash: KeccakHash,
                 headNumber: BlockNumber,
-                headTotalDifficulty: Difficulty,
+                headTotalDifficulty: DifficultyInt,
                 reorgDepth: BlockNumber,
                 values: openarray[KeyValuePair],
                 announceType: uint) =
