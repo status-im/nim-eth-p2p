@@ -463,10 +463,11 @@ proc randomNodes*(k: KademliaProtocol, count: int): seq[Node] =
   # to nodes.
   while len(seen) < count:
     let bucket = k.routing.buckets.rand()
-    let node = bucket.nodes.rand()
-    if node notin seen:
-      result.add(node)
-      seen.incl(node)
+    if bucket.nodes.len != 0:
+      let node = bucket.nodes.rand()
+      if node notin seen:
+        result.add(node)
+        seen.incl(node)
 
 when isMainModule:
   proc randomNode(): Node =

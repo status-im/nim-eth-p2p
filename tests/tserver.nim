@@ -13,6 +13,9 @@ import eth_p2p
 
 const clientId = "nim-eth-p2p/0.0.1"
 
+rlpxProtocol dmy, 1: # Rlpx would be useless with no subprotocols. So we define a dummy proto
+  proc foo(peer: Peer)
+
 proc localAddress(port: int): Address =
   let port = Port(port)
   result = Address(udpPort: port, tcpPort: port, ip: parseIpAddress("127.0.0.1"))
