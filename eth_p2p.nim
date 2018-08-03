@@ -147,6 +147,11 @@ type
 
   MalformedMessageError* = object of Exception
 
+  UnexpectedDisconnectError* = object of Exception
+    reason*: DisconnectionReason
+
+  UselessPeerError* = object of Exception
+
 logScope:
   topic = "rlpx"
 
@@ -188,6 +193,9 @@ proc describeProtocols(d: Dispatcher): string =
   for protocol in d.activeProtocols:
     if result.len != 0: result.add(',')
     for c in protocol.name: result.add(c)
+
+proc numProtocols(d: Dispatcher): int =
+  for _ in d.activeProtocols: inc result
 
 proc getDispatcher(node: EthereumNode,
                    otherPeerCapabilities: openarray[Capability]): Dispatcher =
@@ -301,7 +309,9 @@ proc registerMsg(protocol: var ProtocolInfo,
                  printer: MessageContentPrinter,
                  requestResolver: RequestResolver,
                  nextMsgResolver: NextMsgResolver) =
-  protocol.messages.add MessageInfo(id: id,
+  if protocol.messages.len <= id:
+    protocol.messages.setLen(id + 1)
+  protocol.messages[id] = MessageInfo(id: id,
                                     name: name,
                                     thunk: thunk,
                                     printer: printer,
@@ -361,6 +371,7 @@ proc registerRequest*(peer: Peer,
   peer.outstandingRequests[responseMsgId].addLast req
 
   # XXX: is this safe?
+  assert(not peer.dispatcher.isNil)
   let requestResolver = peer.dispatcher.messages[responseMsgId].requestResolver
   proc timeoutExpired(udata: pointer) = requestResolver(nil, responseFuture)
 
@@ -400,7 +411,6 @@ proc resolveResponseFuture(peer: Peer, msgId: int, msg: pointer, reqId: int) =
     outstandingReqs.shrink(fromFirst = expiredRequests)
     if outstandingReqs.len > 0:
       let oldestReq = outstandingReqs.popFirst
-      assert oldestReq.reqId == -1
       resolve oldestReq.future
     else:
       debug "late or duplicate reply for a RLPx request"
@@ -447,6 +457,9 @@ proc resolveResponseFuture(peer: Peer, msgId: int, msg: pointer, reqId: int) =
 
     debug "late or duplicate reply for a RLPx request"
 
+proc protocolOffset(peer: Peer, Protocol: type): int {.inline.} =
+  peer.dispatcher.protocolOffsets[Protocol.protocolInfo.index]
+
 proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   ##  This procs awaits the next complete RLPx message in the TCP stream
 
@@ -482,21 +495,53 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   let msgId = rlp.read(int)
   return (msgId, rlp)
 
-proc waitSingleMsg(peer: Peer, MsgType: type): Future[MsgType] {.async.} =
-  const wantedId = MsgType.msgId
+import typetraits
+
+proc protoAndMsgIdToInteriorPeerId(peer: Peer, proto: type, msgId: int): int {.inline.} =
+  result = msgId
+  if not peer.dispatcher.isNil:
+    result += peer.protocolOffset(proto)
+
+proc msgTypeToInteriorPeerId(peer: Peer, MsgType: type): int {.inline.} =
+  peer.protoAndMsgIdToInteriorPeerId(MsgType.msgProtocol, MsgType.msgId)
+
+proc rlpReadAndDebug(r: var Rlp, MsgType: type): auto {.inline.} =
+  let tmp = r
+  when defined(release):
+    return r.read(MsgType)
+  else:
+    try:
+      return r.read(MsgType)
+    except:
+      echo "Could not rlp.read ", MsgType.name
+      # echo r.rawData.toSeq().toHex()
+      echo "data: ", tmp.inspect
+      raise
+
+proc waitSingleMsg*(peer: Peer, MsgType: type): Future[MsgType] {.async.} =
+  let wantedId = peer.msgTypeToInteriorPeerId(MsgType)
   while true:
     var (nextMsgId, nextMsgData) = await peer.recvMsg()
     if nextMsgId == wantedId:
-      return nextMsgData.read(MsgType)
+      return nextMsgData.rlpReadAndDebug(MsgType)
+
+    elif nextMsgId == 1:
+      let reason = nextMsgData.listElem(0).toInt(uint32).DisconnectionReason
+      let e = newException(UnexpectedDisconnectError, "Unexpected disconnect")
+      e.reason = reason
+      raise e
+    else:
+      echo "UNHANDLED MESSAGE: ", peer.dispatcher.messages[nextMsgId].name
 
 proc nextMsg*(peer: Peer, MsgType: type): Future[MsgType] =
   ## This procs awaits a specific RLPx message.
   ## Any messages received while waiting will be dispatched to their
   ## respective handlers. The designated message handler will also run
   ## to completion before the future returned by `nextMsg` is resolved.
-  const wantedId = MsgType.msgId
-  if peer.awaitedMessages[wantedId] != nil:
-    return Future[MsgType](peer.awaitedMessages[wantedId])
+  let wantedId = peer.msgTypeToInteriorPeerId(MsgType)
+  let f = peer.awaitedMessages[wantedId]
+  if not f.isNil:
+    return Future[MsgType](f)
 
   new result
   peer.awaitedMessages[wantedId] = result
@@ -539,9 +584,9 @@ proc chooseFieldType(n: NimNode): NimNode =
 proc getState(peer: Peer, proto: ProtocolInfo): RootRef =
   peer.protocolStates[proto.index]
 
-template supports*(peer: Peer, Protocol: type): bool =
+proc supports*(peer: Peer, Protocol: type): bool {.inline.} =
   ## Checks whether a Peer supports a particular protocol
-  peer.dispatcher.protocolOffsets[Protocol.protocolInfo.index] != -1
+  peer.protocolOffset(Protocol) != -1
 
 template state*(peer: Peer, Protocol: type): untyped =
   ## Returns the state object of a particular protocol for a
@@ -578,6 +623,11 @@ proc popTimeoutParam(n: NimNode): NimNode =
       macros.error "You must specify a default value for the `timeout` parameter", lastParam
     result = lastParam
     n.params.del(n.params.len - 1)
+
+proc linkSendFutureToResult[S, R](sendFut: Future[S], resFut: Future[R]) =
+  sendFut.addCallback() do(arg: pointer):
+    if not sendFut.error.isNil:
+      resFut.fail(sendFut.error)
 
 macro rlpxProtocol*(protoIdentifier: untyped,
                     version: static[int],
@@ -621,6 +671,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     startList = bindSym "startList"
     writeMsgId = bindSym "writeMsgId"
     getState = bindSym "getState"
+    linkSendFutureToResult = bindSym "linkSendFutureToResult"
 
   # By convention, all Ethereum protocol names must be abbreviated to 3 letters
   assert protoName.len == 3
@@ -715,6 +766,8 @@ macro rlpxProtocol*(protoIdentifier: untyped,
                               genSym(nskParam, "timeout"),
                               Int, newLit(defaultReqTimeout))
 
+      let expectedMsgId = newCall(bindSym"protoAndMsgIdToInteriorPeerId", msgRecipient, protoNameIdent, newLit(responseMsgId))
+
       # Each request is registered so we can resolve it when the response
       # arrives. There are two types of protocols: LES-like protocols use
       # explicit `reqId` sent over the wire, while the ETH wire protocol
@@ -723,7 +776,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
       let registerRequestCall = newCall(registerRequest, msgRecipient,
                                                          reqTimeout[0],
                                                          resultIdent,
-                                                         newLit(responseMsgId))
+                                                         expectedMsgId)
       if useRequestIds:
         inc paramCount
         appendParams.add quote do:
@@ -732,8 +785,10 @@ macro rlpxProtocol*(protoIdentifier: untyped,
           `append`(`rlpWriter`, `sentReqId`)
       else:
         appendParams.add quote do:
+          new `resultIdent`
           discard `registerRequestCall`
     of rlpxResponse:
+      let expectedMsgId = newCall(bindSym"msgTypeToInteriorPeerId", msgSender, msgRecord)
       if useRequestIds:
         var reqId = genSym(nskLet, "reqId")
 
@@ -742,10 +797,10 @@ macro rlpxProtocol*(protoIdentifier: untyped,
           let `reqId` = `read`(`receivedRlp`, int)
 
         callResolvedResponseFuture.add quote do:
-          `resolveResponseFuture`(`msgSender`, `msgId`, addr(`receivedMsg`), `reqId`)
+          `resolveResponseFuture`(`msgSender`, `expectedMsgId`, addr(`receivedMsg`), `reqId`)
       else:
         callResolvedResponseFuture.add quote do:
-          `resolveResponseFuture`(`msgSender`, `msgId`, addr(`receivedMsg`), -1)
+          `resolveResponseFuture`(`msgSender`, `expectedMsgId`, addr(`receivedMsg`), -1)
 
     if n.body.kind != nnkEmpty:
       # implement the receiving thunk proc that deserialzed the
@@ -779,8 +834,10 @@ macro rlpxProtocol*(protoIdentifier: untyped,
 
       # The received RLP data is deserialized to a local variable of
       # the message-specific type. This is done field by field here:
+      let msgNameLit = newLit(msgName)
+      let rlpReadAndDebug = bindSym "rlpReadAndDebug"
       readParams.add quote do:
-        `receivedMsg`.`param` = `read`(`receivedRlp`, `paramType`)
+        `receivedMsg`.`param` = `rlpReadAndDebug`(`receivedRlp`, `paramType`)
 
       # If there is user message handler, we'll place a call to it by
       # unpacking the fields of the received message:
@@ -808,6 +865,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
       # Add a helper template for obtaining the message Id for
       # a particular message type:
       template msgId*(T: type `msgRecord`): int = `msgId`
+      template msgProtocol*(T: type `msgRecord`): type = `protoNameIdent`
 
     var msgSendProc = n
     # TODO: check that the first param has the correct type
@@ -834,7 +892,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
       # of the proc, so we just wait for the sending operation to complete
       # and we return in a normal way. (the waiting is done, so we can catch
       # any possible errors).
-      quote: waitFor(`sendCall`)
+      quote: `linkSendFutureToResult`(`sendCall`, `resultIdent`)
     else:
       # In normal RLPx messages, we are returning the future returned by the
       # `sendMsg` call.
@@ -844,7 +902,8 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     msgSendProc.body = quote do:
       var `rlpWriter` = `initRlpWriter`()
       `writeMsgId`
-      `startList`(`rlpWriter`, `paramCount`)
+      if `paramCount` > 1:
+        `startList`(`rlpWriter`, `paramCount`)
       `appendParams`
       `senderEpilogue`
 
@@ -969,6 +1028,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
 
   result.add newCall(bindSym("registerProtocol"), protocol)
   when isMainModule: echo repr(result)
+  # echo repr(result)
 
 rlpxProtocol p2p, 0:
   proc hello(peer: Peer,
@@ -1015,8 +1075,15 @@ proc performSubProtocolHandshakes(peer: Peer) {.async.} =
   await all(subProtocolsHandshakes)
   peer.connectionState = Connected
 
+proc checkUselessPeer(peer: Peer) {.inline.} =
+  if peer.dispatcher.numProtocols == 0:
+    # XXX: Send disconnect + UselessPeer
+    raise newException(UselessPeerError, "Useless peer")
+
 proc postHelloSteps(peer: Peer, h: p2p.hello): Future[void] =
   peer.dispatcher = getDispatcher(peer.network, h.capabilities)
+
+  checkUselessPeer(peer)
 
   # The dispatcher has determined our message ID sequence.
   # For each message ID, we allocate a potential slot for
@@ -1024,7 +1091,7 @@ proc postHelloSteps(peer: Peer, h: p2p.hello): Future[void] =
   # (yes, some of the slots won't be used).
   peer.outstandingRequests.newSeq(peer.dispatcher.messages.len)
   for d in mitems(peer.outstandingRequests):
-    d = initDeque[OutstandingRequest](0)
+    d = initDeque[OutstandingRequest]()
 
   # Similarly, we need a bit of book-keeping data to keep track
   # of the potentially concurrent calls to `nextMsg`.
@@ -1054,6 +1121,7 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
   result.remote = remote
 
   let ta = initTAddress(remote.node.address.ip, remote.node.address.tcpPort)
+  var ok = false
   try:
     result.transp = await connect(ta)
 
@@ -1096,9 +1164,20 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
       warn "Remote nodeId is not its public key" # XXX: Do we care?
 
     await postHelloSteps(result, response)
+    ok = true
+  except UnexpectedDisconnectError as e:
+    if e.reason != TooManyPeers:
+      debug "Unexpected disconnect during rlpxConnect", reason = e.reason
+  except UselessPeerError:
+    debug "Useless peer"
   except:
+    echo "Error: ", getCurrentExceptionMsg()
+    echo getCurrentException().getStackTrace()
+
+  if not ok:
     if not isNil(result.transp):
       result.transp.close()
+    result = nil
 
 proc rlpxAccept*(node: EthereumNode,
                  transp: StreamTransport): Future[Peer] {.async.} =
@@ -1130,15 +1209,14 @@ proc rlpxAccept*(node: EthereumNode,
     initSecretState(handshake, authMsg, ^ackMsg, result)
 
     var response = await result.waitSingleMsg(p2p.hello)
+    if not validatePubKeyInHello(response, handshake.remoteHPubkey):
+      warn "A Remote nodeId is not its public key" # XXX: Do we care?
+
     let listenPort = transp.localAddress().port
     await result.hello(baseProtocolVersion, node.clientId,
                        node.rlpxCapabilities, listenPort.uint,
                        node.keys.pubkey.getRaw())
 
-    if validatePubKeyInHello(response, handshake.remoteHPubkey):
-      warn "Remote nodeId is not its public key" # XXX: Do we care?
-
-    let port = Port(response.listenPort)
     let remote = transp.remoteAddress()
     let address = Address(ip: remote.address, tcpPort: remote.port,
                           udpPort: remote.port)
@@ -1146,7 +1224,10 @@ proc rlpxAccept*(node: EthereumNode,
 
     await postHelloSteps(result, response)
   except:
+    echo "Accept exception: ", getCurrentExceptionMsg()
+    echo "Accept exception: ", getCurrentException().getStackTrace()
     transp.close()
+    result = nil
 
 # PeerPool attempts to keep connections to at least min_peers
 # on the given network.
@@ -1236,37 +1317,65 @@ proc peerFinished(p: PeerPool, peer: Peer) =
   ## This is passed as a callback to be called when a peer finishes.
   p.connectedNodes.del(peer.remote)
 
-proc run(p: Peer, completionHandler: proc() = nil) {.async.} =
+proc run(p: Peer, peerPool: PeerPool) {.async.} =
   # TODO: This is a stub that should be implemented in rlpx.nim
-  await sleepAsync(20000) # sleep 20 sec
-  if not completionHandler.isNil: completionHandler()
+
+  try:
+    while true:
+      var (nextMsgId, nextMsgData) = await p.recvMsg()
+      if nextMsgId == 1:
+        debug "Run got disconnect msg", reason = nextMsgData.listElem(0).toInt(uint32).DisconnectionReason
+        break
+      else:
+        # debug "Got msg: ", msg = nextMsgId
+        await p.dispatchMsg(nextMsgId, nextMsgData)
+  except:
+    echo "Could not read from peer: ", getCurrentExceptionMsg()
+    echo getCurrentException().getStackTrace()
+
+  peerPool.peerFinished(p)
+
+proc connectToNode*(p: PeerPool, n: Node) {.async.} =
+  echo "Connecting to node: ", n
+  let peer = await p.connect(n)
+  if not peer.isNil:
+    info "Successfully connected to ", peer
+    ensureFuture peer.run(p)
+
+    p.connectedNodes[peer.remote] = peer
+    # for subscriber in self._subscribers:
+    #   subscriber.register_peer(peer)
 
 proc connectToNodes(p: PeerPool, nodes: seq[Node]) {.async.} =
+  let f = nodes.mapIt(p.connect(it))
   for node in nodes:
-    # TODO: Consider changing connect() to raise an exception instead of
-    # returning None, as discussed in
-    # https://github.com/ethereum/py-evm/pull/139#discussion_r152067425
-    let peer = await p.connect(node)
-    if not peer.isNil:
-      info "Successfully connected to ", peer
-      ensureFuture peer.run() do():
-        p.peerFinished(peer)
+    discard p.connectToNode(node)
 
-      p.connectedNodes[peer.remote] = peer
-      # for subscriber in self._subscribers:
-      #   subscriber.register_peer(peer)
-      if p.connectedNodes.len >= p.minPeers:
-        return
+    # # TODO: Consider changing connect() to raise an exception instead of
+    # # returning None, as discussed in
+    # # https://github.com/ethereum/py-evm/pull/139#discussion_r152067425
+    # echo "Connecting to node: ", node
+    # let peer = await p.connect(node)
+    # if not peer.isNil:
+    #   info "Successfully connected to ", peer
+    #   ensureFuture peer.run(p)
+
+    #   p.connectedNodes[peer.remote] = peer
+    #   # for subscriber in self._subscribers:
+    #   #   subscriber.register_peer(peer)
+    #   if p.connectedNodes.len >= p.minPeers:
+    #     return
 
 proc maybeConnectToMorePeers(p: PeerPool) {.async.} =
   ## Connect to more peers if we're not yet connected to at least self.minPeers.
   if p.connectedNodes.len >= p.minPeers:
-    debug "pool already connected to enough peers (sleeping)", count = p.connectedNodes
+    # debug "pool already connected to enough peers (sleeping)", count = p.connectedNodes
     return
 
   if p.lastLookupTime + lookupInterval < epochTime():
     ensureFuture p.lookupRandomNode()
 
+  # await p.connectToNode(newNode("enode://dd9a58df98decc85fdfaa111c8a8581eb20410e828317cff91af4b87f98f6223ffbb1e657ee84ea6791ef2ac50176a88852cda84d7db1e04b65f3792729ec7d3@127.0.0.1:30303"))
   await p.connectToNodes(p.nodesToConnect())
 
   # In some cases (e.g ROPSTEN or private testnets), the discovery table might
@@ -1282,10 +1391,11 @@ proc run(p: PeerPool) {.async.} =
     var dropConnections = false
     try:
       await p.maybeConnectToMorePeers()
-    except:
+    except Exception as e:
       # Most unexpected errors should be transient, so we log and restart from
       # scratch.
-      error "Unexpected error, restarting"
+      error "Unexpected error, restarting: ", error = getCurrentExceptionMsg()
+      echo e.getStackTrace()
       dropConnections = true
 
     if dropConnections:
@@ -1357,11 +1467,12 @@ proc processIncoming(server: StreamServer,
     remote.close()
 
 proc startListening*(node: EthereumNode) =
+  info "RLPx listener up", self = initENode(node.keys.pubKey, node.address)
   let ta = initTAddress(node.address.ip, node.address.tcpPort)
   if node.listeningServer == nil:
     node.listeningServer = createStreamServer(ta, processIncoming,
                                               {ReuseAddr},
-                                              udata = unsafeAddr(node))
+                                              udata = cast[pointer](node))
   node.listeningServer.start()
 
 proc connectToNetwork*(node: EthereumNode,
@@ -1391,9 +1502,13 @@ proc connectToNetwork*(node: EthereumNode,
 
   node.discovery.open()
   await node.discovery.bootstrap()
-  await node.peerPool.maybeConnectToMorePeers()
+  # await node.peerPool.maybeConnectToMorePeers()
 
   node.peerPool.start()
+
+  while node.peerPool.connectedNodes.len == 0:
+    debug "Waiting for more peers", peers = node.peerPool.connectedNodes.len
+    await sleepAsync(500)
 
 proc stopListening*(node: EthereumNode) =
   node.listeningServer.stop()
