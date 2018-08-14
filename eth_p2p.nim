@@ -10,7 +10,7 @@
 
 import
   tables, deques, macros, sets, algorithm, hashes, times,
-  random, options, sequtils,
+  random, options, sequtils, typetraits,
   asyncdispatch2, asyncdispatch2/timer,
   rlp, ranges/[stackarrays, ptr_arith], nimcrypto, chronicles,
   eth_keys, eth_common,
@@ -370,7 +370,6 @@ proc registerRequest*(peer: Peer,
                                timeoutAt: timeoutAt)
   peer.outstandingRequests[responseMsgId].addLast req
 
-  # XXX: is this safe?
   assert(not peer.dispatcher.isNil)
   let requestResolver = peer.dispatcher.messages[responseMsgId].requestResolver
   proc timeoutExpired(udata: pointer) = requestResolver(nil, responseFuture)
@@ -457,7 +456,7 @@ proc resolveResponseFuture(peer: Peer, msgId: int, msg: pointer, reqId: int) =
 
     debug "late or duplicate reply for a RLPx request"
 
-proc protocolOffset(peer: Peer, Protocol: type): int {.inline.} =
+template protocolOffset(peer: Peer, Protocol: type): int =
   peer.dispatcher.protocolOffsets[Protocol.protocolInfo.index]
 
 proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
@@ -495,17 +494,15 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   let msgId = rlp.read(int)
   return (msgId, rlp)
 
-import typetraits
-
-proc protoAndMsgIdToInteriorPeerId(peer: Peer, proto: type, msgId: int): int {.inline.} =
+proc perPeerMsgId(peer: Peer, proto: type, msgId: int): int {.inline.} =
   result = msgId
   if not peer.dispatcher.isNil:
     result += peer.protocolOffset(proto)
 
-proc msgTypeToInteriorPeerId(peer: Peer, MsgType: type): int {.inline.} =
-  peer.protoAndMsgIdToInteriorPeerId(MsgType.msgProtocol, MsgType.msgId)
+proc perPeerMsgId(peer: Peer, MsgType: type): int {.inline.} =
+  peer.perPeerMsgId(MsgType.msgProtocol, MsgType.msgId)
 
-proc rlpReadAndDebug(r: var Rlp, MsgType: type): auto {.inline.} =
+proc checkedRlpRead(r: var Rlp, MsgType: type): auto {.inline.} =
   let tmp = r
   when defined(release):
     return r.read(MsgType)
@@ -513,32 +510,33 @@ proc rlpReadAndDebug(r: var Rlp, MsgType: type): auto {.inline.} =
     try:
       return r.read(MsgType)
     except:
-      echo "Could not rlp.read ", MsgType.name
-      # echo r.rawData.toSeq().toHex()
-      echo "data: ", tmp.inspect
+      error "Failed rlp.read",
+            msg = MsgType.name,
+            # dataHex = r.rawData.toSeq().toHex(),
+            data = tmp.inspect
       raise
 
 proc waitSingleMsg*(peer: Peer, MsgType: type): Future[MsgType] {.async.} =
-  let wantedId = peer.msgTypeToInteriorPeerId(MsgType)
+  let wantedId = peer.perPeerMsgId(MsgType)
   while true:
     var (nextMsgId, nextMsgData) = await peer.recvMsg()
     if nextMsgId == wantedId:
-      return nextMsgData.rlpReadAndDebug(MsgType)
+      return nextMsgData.checkedRlpRead(MsgType)
 
-    elif nextMsgId == 1:
+    elif nextMsgId == 1: # p2p.disconnect
       let reason = nextMsgData.listElem(0).toInt(uint32).DisconnectionReason
       let e = newException(UnexpectedDisconnectError, "Unexpected disconnect")
       e.reason = reason
       raise e
     else:
-      echo "UNHANDLED MESSAGE: ", peer.dispatcher.messages[nextMsgId].name
+      warn "Dropped RLPX message", msg = peer.dispatcher.messages[nextMsgId].name
 
 proc nextMsg*(peer: Peer, MsgType: type): Future[MsgType] =
   ## This procs awaits a specific RLPx message.
   ## Any messages received while waiting will be dispatched to their
   ## respective handlers. The designated message handler will also run
   ## to completion before the future returned by `nextMsg` is resolved.
-  let wantedId = peer.msgTypeToInteriorPeerId(MsgType)
+  let wantedId = peer.perPeerMsgId(MsgType)
   let f = peer.awaitedMessages[wantedId]
   if not f.isNil:
     return Future[MsgType](f)
@@ -667,10 +665,12 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     requestResolver = bindSym "requestResolver"
     resolveResponseFuture = bindSym "resolveResponseFuture"
     rlpFromBytes = bindSym "rlpFromBytes"
+    checkedRlpRead = bindSym "checkedRlpRead"
     sendMsg = bindSym "sendMsg"
     startList = bindSym "startList"
     writeMsgId = bindSym "writeMsgId"
     getState = bindSym "getState"
+    perPeerMsgId = bindSym "perPeerMsgId"
     linkSendFutureToResult = bindSym "linkSendFutureToResult"
 
   # By convention, all Ethereum protocol names must be abbreviated to 3 letters
@@ -766,7 +766,9 @@ macro rlpxProtocol*(protoIdentifier: untyped,
                               genSym(nskParam, "timeout"),
                               Int, newLit(defaultReqTimeout))
 
-      let expectedMsgId = newCall(bindSym"protoAndMsgIdToInteriorPeerId", msgRecipient, protoNameIdent, newLit(responseMsgId))
+      let expectedMsgId = newCall(perPeerMsgId, msgRecipient,
+                                                protoNameIdent,
+                                                newLit(responseMsgId))
 
       # Each request is registered so we can resolve it when the response
       # arrives. There are two types of protocols: LES-like protocols use
@@ -788,7 +790,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
           new `resultIdent`
           discard `registerRequestCall`
     of rlpxResponse:
-      let expectedMsgId = newCall(bindSym"msgTypeToInteriorPeerId", msgSender, msgRecord)
+      let expectedMsgId = newCall(perPeerMsgId, msgSender, msgRecord)
       if useRequestIds:
         var reqId = genSym(nskLet, "reqId")
 
@@ -835,9 +837,8 @@ macro rlpxProtocol*(protoIdentifier: untyped,
       # The received RLP data is deserialized to a local variable of
       # the message-specific type. This is done field by field here:
       let msgNameLit = newLit(msgName)
-      let rlpReadAndDebug = bindSym "rlpReadAndDebug"
       readParams.add quote do:
-        `receivedMsg`.`param` = `rlpReadAndDebug`(`receivedRlp`, `paramType`)
+        `receivedMsg`.`param` = `checkedRlpRead`(`receivedRlp`, `paramType`)
 
       # If there is user message handler, we'll place a call to it by
       # unpacking the fields of the received message:
@@ -1171,8 +1172,9 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
   except UselessPeerError:
     debug "Useless peer"
   except:
-    echo "Error: ", getCurrentExceptionMsg()
-    echo getCurrentException().getStackTrace()
+    error "Exception in rlpxConnect",
+          err = getCurrentExceptionMsg(),
+          stackTrace = getCurrentException().getStackTrace()
 
   if not ok:
     if not isNil(result.transp):
@@ -1224,8 +1226,9 @@ proc rlpxAccept*(node: EthereumNode,
 
     await postHelloSteps(result, response)
   except:
-    echo "Accept exception: ", getCurrentExceptionMsg()
-    echo "Accept exception: ", getCurrentException().getStackTrace()
+    error "Exception in rlpxAccept",
+          err = getCurrentExceptionMsg(),
+          stackTrace = getCurrentException().getStackTrace()
     transp.close()
     result = nil
 
@@ -1330,16 +1333,17 @@ proc run(p: Peer, peerPool: PeerPool) {.async.} =
         # debug "Got msg: ", msg = nextMsgId
         await p.dispatchMsg(nextMsgId, nextMsgData)
   except:
-    echo "Could not read from peer: ", getCurrentExceptionMsg()
-    echo getCurrentException().getStackTrace()
+    error "Failed to read from peer",
+          err = getCurrentExceptionMsg(),
+          stackTrace = getCurrentException().getStackTrace()
 
   peerPool.peerFinished(p)
 
 proc connectToNode*(p: PeerPool, n: Node) {.async.} =
-  echo "Connecting to node: ", n
+  info "Connecting to node", node = n
   let peer = await p.connect(n)
   if not peer.isNil:
-    info "Successfully connected to ", peer
+    info "Connection established", peer
     ensureFuture peer.run(p)
 
     p.connectedNodes[peer.remote] = peer
@@ -1394,8 +1398,9 @@ proc run(p: PeerPool) {.async.} =
     except Exception as e:
       # Most unexpected errors should be transient, so we log and restart from
       # scratch.
-      error "Unexpected error, restarting: ", error = getCurrentExceptionMsg()
-      echo e.getStackTrace()
+      error "Unexpected PeerPool error, restarting",
+            err = getCurrentExceptionMsg(),
+            stackTrace = e.getStackTrace()
       dropConnections = true
 
     if dropConnections:
