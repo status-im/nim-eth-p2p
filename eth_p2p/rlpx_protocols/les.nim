@@ -10,7 +10,7 @@
 
 import
   times,
-  asyncdispatch2, rlp, eth_common/eth_types,
+  chronicles, asyncdispatch2, rlp, eth_common/eth_types,
   ../../eth_p2p
 
 type
