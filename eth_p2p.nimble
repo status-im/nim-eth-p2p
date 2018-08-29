@@ -19,8 +19,7 @@ requires "nim > 0.18.0",
          "https://github.com/status-im/nim-asyncdispatch2",
          "https://github.com/status-im/nim-eth-common"
 
-
-proc runTest(name: string, lang = "c") = exec "nim " & lang & " -r tests/" & name
+proc runTest(name: string, lang = "c") = exec "nim " & lang & " --experimental:ForLoopMacros -r tests/" & name
 
 task test, "Runs the test suite":
   runTest "testecies"
