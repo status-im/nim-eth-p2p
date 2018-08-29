@@ -137,9 +137,9 @@ proc encryptMsg*(msg: BytesRange, secrets: var SecretState): seq[byte] =
     raise newException(OverflowError, "RLPx message size exceeds limit")
 
   # write the frame size in the first 3 bytes of the header
-  header[0] = byte(msg.len shl 16)
-  header[1] = byte(msg.len shl 8)
-  header[2] = byte(msg.len)
+  header[0] = byte((msg.len shr 16) and 0xFF)
+  header[1] = byte((msg.len shr 8) and 0xFF)
+  header[2] = byte(msg.len and 0xFF)
 
   # XXX:
   # This would be safer if we use a thread-local sequ for the temporary buffer
