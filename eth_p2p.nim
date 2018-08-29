@@ -321,7 +321,6 @@ proc registerMsg(protocol: var ProtocolInfo,
 proc registerProtocol(protocol: ProtocolInfo) =
   # TODO: This can be done at compile-time in the future
   if protocol.version > 0:
-    if gProtocols.isNil: gProtocols = @[]
     let pos = lowerBound(gProtocols, protocol)
     gProtocols.insert(protocol, pos)
     for i in 0 ..< gProtocols.len:
