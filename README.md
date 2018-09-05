@@ -1,9 +1,10 @@
-**nim-eth-p2p**
-[![Build Status](https://travis-ci.org/status-im/nim-eth-p2p.svg?branch=master)](https://travis-ci.org/status-im/nim-eth-p2p)
-[![Build status](https://ci.appveyor.com/api/projects/status/i4txsa2pdyaahmn0/branch/master?svg=true)](https://ci.appveyor.com/project/cheatfate/nim-eth-p2p/branch/master)
+# eth_p2p
+
+[![Build Status (Travis)](https://img.shields.io/travis/status-im/nim-eth-p2p/master.svg?label=Linux%20/%20macOS "Linux/macOS build status (Travis)")](https://travis-ci.org/status-im/nim-eth-p2p)
+[![Windows build status (Appveyor)](https://img.shields.io/appveyor/ci/nimbus/nim-eth-p2p/master.svg?label=Windows "Windows build status (Appveyor)")](https://ci.appveyor.com/project/nimbus/nim-eth-p2p)
 [![License: Apache](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Stability: experimental](https://img.shields.io/badge/stability-experimental-orange.svg)]
+![Stability: experimental](https://img.shields.io/badge/stability-experimental-orange.svg)
 
 ## Introduction
 
@@ -283,9 +284,7 @@ if peer.supports(les): # `les` is the identifier of the light clients sub-protoc
 
 ## License
 
-Distributed under one of the following:
+Licensed under both of the following:
 
-* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-This file may not be copied, modified, or distributed except according to those terms.
+ * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license: [LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT
