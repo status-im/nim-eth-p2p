@@ -251,8 +251,10 @@ template onTimeout(b: untyped) =
   asyncCheck doSleep() do():
     b
 
-proc waitPong(k: KademliaProtocol, n: Node, token: seq[byte]): Future[bool] =
-  let pingid = token & @(n.node.pubkey.data)
+proc pingId(n: Node, token: seq[byte]): seq[byte] {.inline.} =
+  result = token & @(n.node.pubkey.data)
+
+proc waitPong(k: KademliaProtocol, n: Node, pingid: seq[byte]): Future[bool] =
   assert(pingid notin k.pongFutures, "Already waiting for pong from " & $n)
   result = newFuture[bool]("waitPong")
   let fut = result
@@ -316,8 +318,12 @@ proc bond(k: KademliaProtocol, n: Node): Future[bool] {.async.} =
   if n in k.routing:
     return true
 
-  let token = k.ping(n)
-  let gotPong = await k.waitPong(n, token)
+  let pid = pingId(n, k.ping(n))
+  if pid in k.pongFutures:
+    debug "Binding failed, already waiting for pong ", n
+    return false
+
+  let gotPong = await k.waitPong(n, pid)
   if not gotPong:
     debug "bonding failed, didn't receive pong from ", n
     # Drop the failing node and schedule a populateNotFullBuckets() call to try and
@@ -329,6 +335,10 @@ proc bond(k: KademliaProtocol, n: Node): Future[bool] {.async.} =
   # Give the remote node a chance to ping us before we move on and start sending findNode
   # requests. It is ok for waitPing() to timeout and return false here as that just means
   # the remote remembers us.
+  if n in k.pingFutures:
+    debug "Bonding failed, already waiting for ping ", n
+    return false
+
   discard await k.waitPing(n)
 
   debug "bonding completed successfully with ", n
