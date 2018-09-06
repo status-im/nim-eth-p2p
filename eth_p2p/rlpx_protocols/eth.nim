@@ -172,7 +172,7 @@ type
 
 proc endIndex(b: WantedBlocks): BlockNumber =
   result = b.startIndex
-  result += b.numBlocks.u256
+  result += (b.numBlocks - 1).u256
 
 proc availableWorkItem(ctx: SyncContext): int =
   var maxPendingBlock = ctx.finalizedBlock
@@ -257,6 +257,7 @@ proc obtainBlocksFromPeer(peer: Peer, syncCtx: SyncContext) {.async.} =
       skip: 0,
       reverse: false)
 
+    var dataReceived = false
     try:
       let results = await peer.getBlockHeaders(request)
       if results.isSome:
@@ -277,18 +278,22 @@ proc obtainBlocksFromPeer(peer: Peer, syncCtx: SyncContext) {.async.} =
           bodies.add(b.get.blocks)
 
         shallowCopy(workItem.bodies, bodies)
-        syncCtx.returnWorkItem workItemIdx
-
-        continue
+        dataReceived = true
     except:
       # the success case uses `continue`, so we can just fall back to the
       # failure path below. If we signal time-outs with exceptions such
       # failures will be easier to handle.
       discard
 
-    await peer.disconnect(SubprotocolReason)
-    syncCtx.returnWorkItem workItemIdx
-    syncCtx.handleLostPeer()
+    if dataReceived:
+      syncCtx.returnWorkItem workItemIdx
+    else:
+      try:
+        await peer.disconnect(SubprotocolReason)
+      except:
+        discard
+      syncCtx.handleLostPeer()
+      break
 
   debug "Nothing to sync"
 
