@@ -509,10 +509,12 @@ proc checkedRlpRead(r: var Rlp, MsgType: type): auto {.inline.} =
     try:
       return r.read(MsgType)
     except:
+      # echo "Failed rlp.read:", tmp.inspect
       error "Failed rlp.read",
             msg = MsgType.name,
-            # dataHex = r.rawData.toSeq().toHex(),
-            data = tmp.inspect
+            exception = getCurrentExceptionMsg()
+            # dataHex = r.rawData.toSeq().toHex()
+
       raise
 
 proc waitSingleMsg*(peer: Peer, MsgType: type): Future[MsgType] {.async.} =
@@ -1168,12 +1170,18 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
   except UnexpectedDisconnectError as e:
     if e.reason != TooManyPeers:
       debug "Unexpected disconnect during rlpxConnect", reason = e.reason
+  except TransportIncompleteError:
+    debug "Connection dropped in rlpxConnect", remote
   except UselessPeerError:
     debug "Useless peer"
+  except RlpTypeMismatch:
+    # Some peers report capabilities with names longer than 3 chars. We ignore
+    # those for now. Maybe we should allow this though.
+    debug "Rlp error in rlpxConnect"
   except:
-    error "Exception in rlpxConnect",
-          err = getCurrentExceptionMsg(),
-          stackTrace = getCurrentException().getStackTrace()
+    info "Exception in rlpxConnect", remote,
+          exc = getCurrentException().name,
+          err = getCurrentExceptionMsg()
 
   if not ok:
     if not isNil(result.transp):
@@ -1378,7 +1386,7 @@ proc maybeConnectToMorePeers(p: PeerPool) {.async.} =
   if p.lastLookupTime + lookupInterval < epochTime():
     ensureFuture p.lookupRandomNode()
 
-  # await p.connectToNode(newNode("enode://dd9a58df98decc85fdfaa111c8a8581eb20410e828317cff91af4b87f98f6223ffbb1e657ee84ea6791ef2ac50176a88852cda84d7db1e04b65f3792729ec7d3@127.0.0.1:30303"))
+  # await p.connectToNode(newNode("enode://a52e914fa5aa46409e526a342a1e68b4e572c720e6eb1e61ad4a4201937679e7ebd26915bdabb2fdab6add7d85ba537078dbdccca89816a40ffc375572b6f73d@127.0.0.1:30303"))
   await p.connectToNodes(p.nodesToConnect())
 
   # In some cases (e.g ROPSTEN or private testnets), the discovery table might
