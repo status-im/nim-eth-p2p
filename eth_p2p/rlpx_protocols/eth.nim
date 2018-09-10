@@ -134,7 +134,7 @@ rlpxProtocol eth, protocolVersion:
 
   requestResponse:
     proc getNodeData(peer: Peer, hashes: openarray[KeccakHash]) =
-      discard
+      await peer.nodeData([])
 
     proc nodeData(peer: Peer, data: openarray[Blob]) =
       discard
