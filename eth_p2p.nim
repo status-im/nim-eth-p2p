@@ -599,6 +599,7 @@ proc getNetworkState(peer: Peer, proto: ProtocolInfo): RootRef =
 template networkState*(connection: Peer, Protocol: type): untyped =
   ## Returns the network state object of a particular protocol for a
   ## particular connection.
+  bind getNetworkState
   cast[ref Protocol.NetworkState](connection.getNetworkState(Protocol.protocolInfo))
 
 proc initProtocolState*[T](state: var T, x: Peer|EthereumNode) = discard
@@ -671,6 +672,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     startList = bindSym "startList"
     writeMsgId = bindSym "writeMsgId"
     getState = bindSym "getState"
+    getNetworkState = bindSym "getNetworkState"
     perPeerMsgId = bindSym "perPeerMsgId"
     linkSendFutureToResult = bindSym "linkSendFutureToResult"
 
@@ -700,7 +702,7 @@ macro rlpxProtocol*(protoIdentifier: untyped,
     if networkStateType != nil:
       var networkStateAccessor = quote:
         template networkState(p: `Peer`): ref `networkStateType` =
-          cast[ref `networkStateType`](p.getNetworkState(`protocol`))
+          cast[ref `networkStateType`](`getNetworkState`(p, `protocol`))
 
       userHandlerProc.body.insert 0, networkStateAccessor
 
