@@ -16,8 +16,8 @@ requires "nim > 0.18.0",
          "stint",
          "byteutils",
          "chronicles",
-         "https://github.com/status-im/nim-asyncdispatch2",
-         "https://github.com/status-im/nim-eth-common"
+         "asyncdispatch2",
+         "eth_common"
 
 proc runTest(name: string, lang = "c") = exec "nim " & lang & " --experimental:ForLoopMacros -r tests/" & name
 
