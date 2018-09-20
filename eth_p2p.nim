@@ -10,7 +10,7 @@
 
 import
   tables, deques, macros, sets, algorithm, hashes, times,
-  random, options, sequtils, typetraits,
+  random, options, sequtils, typetraits, os,
   asyncdispatch2, asyncdispatch2/timer,
   rlp, ranges/[stackarrays, ptr_arith], nimcrypto, chronicles,
   eth_keys, eth_common,
@@ -1388,8 +1388,11 @@ proc maybeConnectToMorePeers(p: PeerPool) {.async.} =
   if p.lastLookupTime + lookupInterval < epochTime():
     ensureFuture p.lookupRandomNode()
 
-  # await p.connectToNode(newNode("enode://a52e914fa5aa46409e526a342a1e68b4e572c720e6eb1e61ad4a4201937679e7ebd26915bdabb2fdab6add7d85ba537078dbdccca89816a40ffc375572b6f73d@127.0.0.1:30303"))
-  await p.connectToNodes(p.nodesToConnect())
+  let debugEnode = getEnv("ETH_DEBUG_ENODE")
+  if debugEnode.len != 0:
+    await p.connectToNode(newNode(debugEnode))
+  else:
+    await p.connectToNodes(p.nodesToConnect())
 
   # In some cases (e.g ROPSTEN or private testnets), the discovery table might
   # be full of bad peers, so if we can't connect to any peers we try a random
