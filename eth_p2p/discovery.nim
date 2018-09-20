@@ -99,7 +99,10 @@ proc expiration(): uint32 =
 
 proc send(d: DiscoveryProtocol, n: Node, data: seq[byte]) =
   let ta = initTAddress(n.node.address.ip, n.node.address.udpPort)
-  asyncCheck d.transp.sendTo(ta, data)
+  let f = d.transp.sendTo(ta, data)
+  f.callback = proc(data: pointer) =
+    if f.failed:
+      error "Discovery send failed: ", f.readError.msg
 
 proc sendPing*(d: DiscoveryProtocol, n: Node): seq[byte] =
   let payload = rlp.encode((PROTO_VERSION, d.address, n.node.address,
