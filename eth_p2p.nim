@@ -60,6 +60,7 @@ type
     discovery: DiscoveryProtocol
     lastLookupTime: float
     connectedNodes: Table[Node, Peer]
+    connectingNodes: HashSet[Node]
     running: bool
     listenPort*: Port
 
@@ -1259,6 +1260,7 @@ proc newPeerPool*(network: EthereumNode,
   result.networkId = networkId
   result.discovery = discovery
   result.connectedNodes = initTable[Node, Peer]()
+  result.connectingNodes = initSet[Node]()
   result.listenPort = listenPort
 
 template ensureFuture(f: untyped) = asyncCheck f
@@ -1292,7 +1294,14 @@ proc connect(p: PeerPool, remote: Node): Future[Peer] {.async.} =
     debug "skipping_connection_to_already_connected_peer", remote
     return nil
 
+  if remote in p.connectingNodes:
+    # debug "skipping connection"
+    return nil
+
+  debug "Connecting to node", remote
+  p.connectingNodes.incl(remote)
   result = await p.network.rlpxConnect(remote)
+  p.connectingNodes.excl(remote)
 
   # expected_exceptions = (
   #   UnreachablePeer, TimeoutError, PeerConnectionLost, HandshakeFailure)
@@ -1349,7 +1358,6 @@ proc run(p: Peer, peerPool: PeerPool) {.async.} =
   peerPool.peerFinished(p)
 
 proc connectToNode*(p: PeerPool, n: Node) {.async.} =
-  info "Connecting to node", node = n
   let peer = await p.connect(n)
   if not peer.isNil:
     info "Connection established", peer
@@ -1360,7 +1368,6 @@ proc connectToNode*(p: PeerPool, n: Node) {.async.} =
     #   subscriber.register_peer(peer)
 
 proc connectToNodes(p: PeerPool, nodes: seq[Node]) {.async.} =
-  let f = nodes.mapIt(p.connect(it))
   for node in nodes:
     discard p.connectToNode(node)
 
@@ -1494,7 +1501,8 @@ proc startListening*(node: EthereumNode) =
 
 proc connectToNetwork*(node: EthereumNode,
                        bootstrapNodes: seq[ENode],
-                       startListening = true) {.async.} =
+                       startListening = true,
+                       enableDiscovery = true) {.async.} =
   assert node.connectionState == ConnectionState.None
 
   node.connectionState = Connecting
@@ -1517,9 +1525,11 @@ proc connectToNetwork*(node: EthereumNode,
   if startListening:
     node.listeningServer.start()
 
-  node.discovery.open()
-  await node.discovery.bootstrap()
-  # await node.peerPool.maybeConnectToMorePeers()
+  if enableDiscovery:
+    node.discovery.open()
+    await node.discovery.bootstrap()
+  else:
+    info "Disovery disabled"
 
   node.peerPool.start()
 
