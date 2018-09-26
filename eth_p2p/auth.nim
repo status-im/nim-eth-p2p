@@ -189,7 +189,7 @@ proc authMessageEIP8(h: var Handshake,
                  int(padsize))) != int(padsize):
     return(RandomError)
   if encrypt:
-    copyMem(addr buffer[0], payload.baseAddr, len(payload))
+    copyMem(addr buffer[0], addr payload[0], len(payload))
     if len(output) < fullsize:
       return(BufferOverrun)
     bigEndian16(addr output, addr wosize)
@@ -260,7 +260,7 @@ proc ackMessageEIP8(h: var Handshake,
     if randomBytes(toa(buffer, PlainAckMessageEIP8Length,
                    int(padsize))) != int(padsize):
       return(RandomError)
-  copyMem(addr buffer[0], payload.baseAddr, len(payload))
+  copyMem(addr buffer[0], addr payload[0], len(payload))
   if encrypt:
     if len(output) < fullsize:
       return(BufferOverrun)

@@ -350,7 +350,7 @@ proc dispatchMsg(peer: Peer, msgId: int, msgData: var Rlp): Future[void] =
 
   return thunk(peer, msgData)
 
-proc sendMsg(p: Peer, data: BytesRange) {.async.} =
+proc sendMsg(p: Peer, data: Bytes) {.async.} =
   # var rlp = rlpFromBytes(data)
   # echo "sending: ", rlp.read(int)
   # echo "payload: ", rlp.inspect

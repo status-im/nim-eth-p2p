@@ -106,14 +106,14 @@ proc send(d: DiscoveryProtocol, n: Node, data: seq[byte]) =
 
 proc sendPing*(d: DiscoveryProtocol, n: Node): seq[byte] =
   let payload = rlp.encode((PROTO_VERSION, d.address, n.node.address,
-                            expiration()))
+                            expiration())).toRange
   let msg = pack(cmdPing, payload, d.privKey)
   result = msg[0 ..< MAC_SIZE]
   debug ">>> ping ", n
   d.send(n, msg)
 
 proc sendPong*(d: DiscoveryProtocol, n: Node, token: MDigest[256]) =
-  let payload = rlp.encode((n.node.address, token, expiration()))
+  let payload = rlp.encode((n.node.address, token, expiration())).toRange
   let msg = pack(cmdPong, payload, d.privKey)
   debug ">>> pong ", n
   d.send(n, msg)
@@ -121,7 +121,7 @@ proc sendPong*(d: DiscoveryProtocol, n: Node, token: MDigest[256]) =
 proc sendFindNode*(d: DiscoveryProtocol, n: Node, targetNodeId: NodeId) =
   var data: array[64, byte]
   data[32 .. ^1] = targetNodeId.toByteArrayBE()
-  let payload = rlp.encode((data, expiration()))
+  let payload = rlp.encode((data, expiration())).toRange
   let msg = pack(cmdFindNode, payload, d.privKey)
   debug ">>> find_node to ", n#, ": ", msg.toHex()
   d.send(n, msg)
@@ -134,7 +134,7 @@ proc sendNeighbours*(d: DiscoveryProtocol, node: Node, neighbours: seq[Node]) =
 
   template flush() =
     block:
-      let payload = rlp.encode((nodes, expiration()))
+      let payload = rlp.encode((nodes, expiration())).toRange
       let msg = pack(cmdNeighbours, payload, d.privkey)
       debug ">>> neighbours to ", node, ": ", nodes
       d.send(node, msg)
