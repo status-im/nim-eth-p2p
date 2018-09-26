@@ -130,7 +130,7 @@ proc encrypt*(c: var SecretState, header: openarray[byte],
   copyMem(addr output[frameMacPos], addr frameMac.data[0], RlpHeaderLength)
   result = Success
 
-proc encryptMsg*(msg: BytesRange, secrets: var SecretState): seq[byte] =
+proc encryptMsg*(msg: openarray[byte], secrets: var SecretState): seq[byte] =
   var header: RlpxHeader
 
   if uint32(msg.len) > maxUInt24:
@@ -144,7 +144,7 @@ proc encryptMsg*(msg: BytesRange, secrets: var SecretState): seq[byte] =
   # XXX:
   # This would be safer if we use a thread-local sequ for the temporary buffer
   result = newSeq[byte](encryptedLength(msg.len))
-  let s = encrypt(secrets, header, msg.toOpenArray, result)
+  let s = encrypt(secrets, header, msg, result)
   assert s == Success
 
 proc getBodySize*(a: RlpxHeader): int =

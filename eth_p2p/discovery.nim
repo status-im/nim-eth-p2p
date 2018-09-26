@@ -68,14 +68,14 @@ proc append(w: var RlpWriter, p: Port) {.inline.} = w.append(p.int)
 proc append(w: var RlpWriter, pk: PublicKey) {.inline.} = w.append(pk.getRaw())
 proc append(w: var RlpWriter, h: MDigest[256]) {.inline.} = w.append(h.data)
 
-proc pack(cmdId: CommandId, payload: BytesRange, pk: PrivateKey): Bytes =
+proc pack(cmdId: CommandId, payload: seq[byte], pk: PrivateKey): Bytes =
   ## Create and sign a UDP message to be sent to a remote node.
   ##
   ## See https://github.com/ethereum/devp2p/blob/master/rlpx.md#node-discovery for information on
   ## how UDP packets are structured.
 
   # TODO: There is a lot of unneeded allocations here
-  let encodedData = @[cmdId.byte] & payload.toSeq()
+  let encodedData = @[cmdId.byte] & payload
   let signature = @(pk.signMessage(encodedData).getRaw())
   let msgHash = keccak256.digest(signature & encodedData)
   result = @(msgHash.data) & signature & encodedData
