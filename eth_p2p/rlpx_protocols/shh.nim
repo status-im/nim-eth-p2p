@@ -10,25 +10,26 @@ import
   algorithm,
   bitops,
   endians,
-  eth_keys,
-  eth_p2p/ecies,
   math,
-  nimcrypto/hash,
-  nimcrypto/keccak,
-  nimcrypto/rijndael,
   options,
-  rlp/types,
-  rlp/writer,
-  secp256k1,
   sequtils,
   strutils,
   tables,
-  times
+  times,
+  secp256k1,
+  chronicles,
+  asyncdispatch2,
+  eth_common/eth_types,
+  eth_keys,
+  rlp,
+  nimcrypto/[hash, keccak, rijndael],
+  ../../eth_p2p, ../ecies
 
 const
   PadLengthMask = 0b11000000'u8
   PadLengthPos  = 6
   SignedMask = 0b00100000'u8
+  whisperVersion* = 6
 
 type
   Hash = MDigest[256]
@@ -45,18 +46,18 @@ type
     src: Option[PrivateKey] ## Optional key used for signing message
     dst: Option[PublicKey] ## Optional key used for asymmetric encryption
     symKey: Option[SymKey] ## Optional key used for symmetric encryption
-    payload: seq[byte] ## Application data / message contents
-    padding: seq[byte] ## Padding - if empty, will automatically pad up to
-                       ## nearest 256-byte boundary
+    payload: Bytes ## Application data / message contents
+    padding: Bytes ## Padding - if empty, will automatically pad up to
+                   ## nearest 256-byte boundary
 
   Envelope = object
     ## What goes on the wire in the whisper protocol - a payload and some
     ## book-keeping
     ## Don't touch field order, there's lots of macro magic that depends on it
-    expiry: uint64 ## Unix timestamp when message expires
-    ttl: uint64 ## Time-to-live, seconds - message was created at (expiry - ttl)
+    expiry: uint32 ## Unix timestamp when message expires
+    ttl: uint32 ## Time-to-live, seconds - message was created at (expiry - ttl)
     topic: Topic
-    data: seq[byte] ## Payload, as given by user
+    data: Bytes ## Payload, as given by user
     nonce: uint64 ## Nonce used for proof-of-work calculation
 
   Message = object
@@ -135,7 +136,7 @@ proc topicBloom(topic: Topic): Bloom =
 # simply because that makes it closer to EIP 627 - see also:
 # https://github.com/paritytech/parity-ethereum/issues/9652
 
-proc encode*(self: Payload): seq[byte] =
+proc encode*(self: Payload): Bytes =
   ## Encode a payload according so as to make it suitable to put in an Envelope
 
   const
@@ -203,7 +204,7 @@ proc encode*(self: Payload): seq[byte] =
 proc decode*(self: var Payload, data: openarray[byte]): bool =
   ## Decode data into payload, using keys found in self
 
-  var plain: seq[byte]
+  var plain: Bytes
   if self.src.isSome():
     plain.setLen(eciesDecryptedLength(data.len))
     if eciesDecrypt(data, plain, self.src.get()) != EciesStatus.Success:
@@ -239,13 +240,13 @@ proc valid*(self: Envelope, now = epochTime()): bool =
 
   return true
 
-proc toShortRlp(self: Envelope): seq[byte] =
+proc toShortRlp(self: Envelope): Bytes =
   ## RLP-encoded message without nonce is used during proof-of-work calculations
-  writer.encodeList(self.expiry, self.ttl, self.topic, self.data)
+  rlp.encodeList(self.expiry, self.ttl, self.topic, self.data)
 
-proc toRlp(self: Envelope): seq[byte] =
+proc toRlp(self: Envelope): Bytes =
   ## What gets sent out over the wire includes the nonce
-  writer.encode(self)
+  rlp.encode(self)
 
 proc minePow*(self: Envelope, seconds: float): uint64 =
   ## For the given envelope, spend millis milliseconds to find the
@@ -328,22 +329,30 @@ proc add(self: var Queue, msg: Message) =
 
   self.items.insert(msg, self.items.lowerBound(msg, cmpPow))
 
-when false:
-  rlpxProtocol shh, 6:
-    proc status(p: Peer, values: openarray[KeyValuePair]) =
-      discard
+rlpxProtocol shh, whisperVersion:
+  proc status(peer: Peer,
+              protocolVersion: uint,
+              powCoverted: uint,
+              bloom: Bytes,
+              isLightNode: bool) =
+    discard
 
-    proc status(p: Peer, values: openarray[KeyValuePair]) =
-      discard
+  proc messages(peer: Peer, envelopes: openarray[Envelope]) =
+    discard
 
-    proc messages(p: Peer, values: openarray[KeyValuePair]) =
-      discard
+  proc powRequirement(peer: Peer, value: float64) =
+    discard
 
-    proc powRequirement(p: Peer, values: openarray[KeyValuePair]) =
-      discard
+  proc bloomFilterExchange(peer: Peer, bloom: Bytes) =
+    discard
 
-    proc topicFilter(p: Peer, values: openarray[KeyValuePair]) =
-      discard
+  nextID 126
+
+  proc p2pRequest(peer: Peer, envelope: Envelope) =
+    discard
+
+  proc p2pMessage(peer: Peer, envelope: Envelope) =
+    discard
 
 if isMainModule:
   block:
@@ -389,5 +398,5 @@ if isMainModule:
     doAssert queue.items.len() == 2
 
   block:
-    doAssert writer.encode(env0) ==
-      writer.encodeList(env0.expiry, env0.ttl, env0.topic, env0.data, env0.nonce)
+    doAssert rlp.encode(env0) ==
+      rlp.encodeList(env0.expiry, env0.ttl, env0.topic, env0.data, env0.nonce)
