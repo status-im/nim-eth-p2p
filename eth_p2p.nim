@@ -63,6 +63,7 @@ type
     connectingNodes: HashSet[Node]
     running: bool
     listenPort*: Port
+    observers: Table[int, PeerObserver]
 
   MessageInfo* = object
     id*: int
@@ -104,6 +105,10 @@ type
     #
     protocolOffsets: seq[int]
     messages: seq[ptr MessageInfo]
+
+  PeerObserver* = object
+    onPeerConnected*: proc(p: Peer)
+    onPeerDisconnected*: proc(p: Peer)
 
   MessageHandler = proc(x: Peer, data: Rlp): Future[void]
   MessageContentPrinter = proc(msg: pointer): string
@@ -492,6 +497,11 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   decryptedBytes.setLen(decryptedBytesCount)
   var rlp = rlpFromBytes(decryptedBytes.toRange)
   let msgId = rlp.read(int)
+  # if not peer.dispatcher.isNil:
+  #
+  #   echo "Read msg: ", peer.dispatcher.messages[msgId].name
+  # else:
+  #   echo "Read msg: ", msgId
   return (msgId, rlp)
 
 proc perPeerMsgId(peer: Peer, proto: type, msgId: int): int {.inline.} =
@@ -1261,6 +1271,7 @@ proc newPeerPool*(network: EthereumNode,
   result.discovery = discovery
   result.connectedNodes = initTable[Node, Peer]()
   result.connectingNodes = initSet[Node]()
+  result.observers = initTable[int, PeerObserver]()
   result.listenPort = listenPort
 
 template ensureFuture(f: untyped) = asyncCheck f
@@ -1268,14 +1279,21 @@ template ensureFuture(f: untyped) = asyncCheck f
 proc nodesToConnect(p: PeerPool): seq[Node] {.inline.} =
   p.discovery.randomNodes(p.minPeers)
 
-# def subscribe(self, subscriber: PeerPoolSubscriber) -> None:
-#   self._subscribers.append(subscriber)
-#   for peer in self.connected_nodes.values():
-#     subscriber.register_peer(peer)
+proc addObserver(p: PeerPool, observerId: int, observer: PeerObserver) =
+  assert(observerId notin p.observers)
+  p.observers[observerId] = observer
+  if not observer.onPeerConnected.isNil:
+    for peer in p.connectedNodes.values:
+      observer.onPeerConnected(peer)
 
-# def unsubscribe(self, subscriber: PeerPoolSubscriber) -> None:
-#   if subscriber in self._subscribers:
-#     self._subscribers.remove(subscriber)
+proc delObserver(p: PeerPool, observerId: int) =
+  p.observers.del(observerId)
+
+proc addObserver*(p: PeerPool, observerId: ref, observer: PeerObserver) {.inline.} =
+  p.addObserver(cast[int](observerId), observer)
+
+proc delObserver*(p: PeerPool, observerId: ref) {.inline.} =
+  p.delObserver(cast[int](observerId))
 
 proc stopAllPeers(p: PeerPool) {.async.} =
   info "Stopping all peers ..."
@@ -1338,24 +1356,28 @@ proc peerFinished(p: PeerPool, peer: Peer) =
   ## This is passed as a callback to be called when a peer finishes.
   p.connectedNodes.del(peer.remote)
 
-proc run(p: Peer, peerPool: PeerPool) {.async.} =
+  for o in p.observers.values:
+    if not o.onPeerDisconnected.isNil:
+      o.onPeerDisconnected(peer)
+
+proc run(peer: Peer, peerPool: PeerPool) {.async.} =
   # TODO: This is a stub that should be implemented in rlpx.nim
 
   try:
     while true:
-      var (nextMsgId, nextMsgData) = await p.recvMsg()
+      var (nextMsgId, nextMsgData) = await peer.recvMsg()
       if nextMsgId == 1:
-        debug "Run got disconnect msg", reason = nextMsgData.listElem(0).toInt(uint32).DisconnectionReason
+        debug "Run got disconnect msg", reason = nextMsgData.listElem(0).toInt(uint32).DisconnectionReason, peer
         break
       else:
         # debug "Got msg: ", msg = nextMsgId
-        await p.dispatchMsg(nextMsgId, nextMsgData)
+        await peer.dispatchMsg(nextMsgId, nextMsgData)
   except:
     error "Failed to read from peer",
           err = getCurrentExceptionMsg(),
           stackTrace = getCurrentException().getStackTrace()
 
-  peerPool.peerFinished(p)
+  peerPool.peerFinished(peer)
 
 proc connectToNode*(p: PeerPool, n: Node) {.async.} =
   let peer = await p.connect(n)
@@ -1364,8 +1386,9 @@ proc connectToNode*(p: PeerPool, n: Node) {.async.} =
     ensureFuture peer.run(p)
 
     p.connectedNodes[peer.remote] = peer
-    # for subscriber in self._subscribers:
-    #   subscriber.register_peer(peer)
+    for o in p.observers.values:
+      if not o.onPeerConnected.isNil:
+        o.onPeerConnected(peer)
 
 proc connectToNodes(p: PeerPool, nodes: seq[Node]) {.async.} =
   for node in nodes:
@@ -1431,6 +1454,7 @@ proc start*(p: PeerPool) =
   if not p.running:
     asyncCheck p.run()
 
+proc len*(p: PeerPool): int = p.connectedNodes.len
 # @property
 # def peers(self) -> List[BasePeer]:
 #   peers = list(self.connected_nodes.values())
@@ -1540,14 +1564,22 @@ proc connectToNetwork*(node: EthereumNode,
 proc stopListening*(node: EthereumNode) =
   node.listeningServer.stop()
 
+iterator peers*(p: PeerPool): Peer =
+  for remote, peer in p.connectedNodes:
+    yield peer
+
+iterator peers*(p: PeerPool, Protocol: type): Peer =
+  for peer in p.peers:
+    if peer.supports(Protocol):
+      yield peer
+
 iterator peers*(node: EthereumNode): Peer =
-  for remote, peer in node.peerPool.connectedNodes:
+  for peer in node.peerPool.peers:
     yield peer
 
 iterator peers*(node: EthereumNode, Protocol: type): Peer =
-  for peer in node.peers:
-    if peer.supports(Protocol):
-      yield peer
+  for peer in node.peerPool.peers(Protocol):
+    yield peer
 
 iterator randomPeers*(node: EthereumNode, maxPeers: int): Peer =
   # TODO: this can be implemented more efficiently
