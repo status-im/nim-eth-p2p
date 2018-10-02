@@ -162,7 +162,8 @@ type
   WantedBlocksState = enum
     Initial,
     Requested,
-    Received
+    Received,
+    Persisted
 
   WantedBlocks = object
     startIndex: BlockNumber
@@ -178,6 +179,7 @@ type
     chain: AbstractChainDB
     peerPool: PeerPool
     trustedPeers: HashSet[Peer]
+    hasOutOfOrderBlocks: bool
 
 proc endIndex(b: WantedBlocks): BlockNumber =
   result = b.startIndex
@@ -185,12 +187,13 @@ proc endIndex(b: WantedBlocks): BlockNumber =
 
 proc availableWorkItem(ctx: SyncContext): int =
   var maxPendingBlock = ctx.finalizedBlock
+  echo "queue len: ", ctx.workQueue.len
   result = -1
   for i in 0 .. ctx.workQueue.high:
     case ctx.workQueue[i].state
     of Initial:
       return i
-    of Received:
+    of Persisted:
       result = i
     else:
       discard
@@ -211,23 +214,58 @@ proc availableWorkItem(ctx: SyncContext): int =
     numBlocks = maxHeadersFetch
   ctx.workQueue[result] = WantedBlocks(startIndex: nextRequestedBlock, numBlocks: numBlocks.uint, state: Initial)
 
+proc persistWorkItem(ctx: SyncContext, wi: var WantedBlocks) =
+  ctx.chain.persistBlocks(wi.headers, wi.bodies)
+  wi.headers.setLen(0)
+  wi.bodies.setLen(0)
+  ctx.finalizedBlock = wi.endIndex
+  wi.state = Persisted
+
+proc persistPendingWorkItems(ctx: SyncContext) =
+  var nextStartIndex = ctx.finalizedBlock + 1
+  var keepRunning = true
+  var hasOutOfOrderBlocks = false
+  debug "Looking for out of order blocks"
+  while keepRunning:
+    keepRunning = false
+    hasOutOfOrderBlocks = false
+    for i in 0 ..< ctx.workQueue.len:
+      let start = ctx.workQueue[i].startIndex
+      if ctx.workQueue[i].state == Received:
+        if start == nextStartIndex:
+          debug "Persisting pending work item", start
+          ctx.persistWorkItem(ctx.workQueue[i])
+          nextStartIndex = ctx.finalizedBlock + 1
+          keepRunning = true
+          break
+        else:
+          hasOutOfOrderBlocks = true
+
+  ctx.hasOutOfOrderBlocks = hasOutOfOrderBlocks
+
 proc returnWorkItem(ctx: SyncContext, workItem: int) =
   let wi = addr ctx.workQueue[workItem]
   let askedBlocks = wi.numBlocks.int
   let receivedBlocks = wi.headers.len
+  let start = wi.startIndex
 
   if askedBlocks == receivedBlocks:
-    debug "Work item complete", startBlock = wi.startIndex,
+    debug "Work item complete", start,
                                 askedBlocks,
                                 receivedBlocks
   else:
-    warn "Work item complete", startBlock = wi.startIndex,
+    warn "Work item complete", start,
                                 askedBlocks,
                                 receivedBlocks
 
-  ctx.chain.persistBlocks(wi.headers, wi.bodies)
-  wi.headers.setLen(0)
-  wi.bodies.setLen(0)
+  if wi.startIndex != ctx.finalizedBlock + 1:
+    info "Blocks out of order", start, final = ctx.finalizedBlock
+    ctx.hasOutOfOrderBlocks = true
+  else:
+    info "Persisting blocks", start
+    ctx.persistWorkItem(wi[])
+    if ctx.hasOutOfOrderBlocks:
+      ctx.persistPendingWorkItems()
 
 proc newSyncContext(chain: AbstractChainDB, peerPool: PeerPool): SyncContext =
   new result
@@ -276,7 +314,6 @@ proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
     try:
       let results = await peer.getBlockHeaders(request)
       if results.isSome:
-        workItem.state = Received
         shallowCopy(workItem.headers, results.get.headers)
 
         var bodies = newSeq[BlockBody]()
@@ -292,8 +329,11 @@ proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
           let b = await peer.getBlockBodies(hashes)
           bodies.add(b.get.blocks)
 
-        shallowCopy(workItem.bodies, bodies)
-        dataReceived = true
+        if bodies.len == workItem.headers.len:
+          shallowCopy(workItem.bodies, bodies)
+          dataReceived = true
+        else:
+          warn "Bodies len != headers.len", bodies = bodies.len, headers = workItem.headers.len
     except:
       # the success case uses `continue`, so we can just fall back to the
       # failure path below. If we signal time-outs with exceptions such
@@ -301,8 +341,10 @@ proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
       discard
 
     if dataReceived:
+      workItem.state = Received
       syncCtx.returnWorkItem workItemIdx
     else:
+      workItem.state = Initial
       try:
         await peer.disconnect(SubprotocolReason)
       except:
@@ -310,7 +352,7 @@ proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
       syncCtx.handleLostPeer()
       break
 
-  debug "Nothing to sync"
+  debug "Fininshed otaining blocks", peer
 
 proc peersAgreeOnChain(a, b: Peer): Future[bool] {.async.} =
   # Returns true if one of the peers acknowledges existense of the best block
