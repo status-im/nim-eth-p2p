@@ -154,7 +154,7 @@ type
   UselessPeerError* = object of Exception
 
 logScope:
-  topic = "rlpx"
+  topics = "rlpx"
 
 const
   baseProtocolVersion = 4
