@@ -67,6 +67,7 @@ proc newNode*(enode: ENode): Node =
 proc distanceTo(n: Node, id: NodeId): UInt256 = n.id xor id
 
 proc `$`*(n: Node): string =
+  # "Node[" & $n.node & "]"
   "Node[" & $n.node.address.ip & ":" & $n.node.address.udpPort & "]"
 
 proc hash*(n: Node): hashes.Hash = hash(n.node.pubkey.data)
@@ -478,6 +479,8 @@ proc randomNodes*(k: KademliaProtocol, count: int): seq[Node] =
       if node notin seen:
         result.add(node)
         seen.incl(node)
+
+proc nodesDiscovered*(k: KademliaProtocol): int {.inline.} = k.routing.len
 
 when isMainModule:
   proc randomNode(): Node =

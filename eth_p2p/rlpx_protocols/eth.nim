@@ -12,7 +12,7 @@
 ## https://github.com/ethereum/wiki/wiki/Ethereum-Wire-Protocol
 
 import
-  random,
+  random, algorithm, hashes,
   asyncdispatch2, rlp, stint, eth_common, chronicles,
   ../../eth_p2p
 
@@ -39,6 +39,7 @@ const
   maxReceiptsFetch = 256
   maxHeadersFetch = 192
   protocolVersion = 63
+  minPeersToStartSync = 2 # Wait for consensus of at least this number of peers before syncing
 
 rlpxProtocol eth, protocolVersion:
   useRequestIds = false
@@ -58,6 +59,10 @@ rlpxProtocol eth, protocolVersion:
                       chain.genesisHash)
 
     let m = await peer.waitSingleMsg(eth.status)
+    if m.networkId == network.networkId and m.genesisHash == chain.genesisHash:
+      debug "Suitable peer", peer
+    else:
+      raise newException(UselessPeerError, "Eth handshake params mismatch")
     peer.state.initialized = true
     peer.state.bestDifficulty = m.totalDifficulty
     peer.state.bestBlockHash = m.bestHash
@@ -146,6 +151,8 @@ rlpxProtocol eth, protocolVersion:
     proc receipts(peer: Peer, receipts: openarray[Receipt]) =
       discard
 
+proc hash*(p: Peer): Hash {.inline.} = hash(cast[pointer](p))
+
 type
   SyncStatus* = enum
     syncSuccess
@@ -155,7 +162,8 @@ type
   WantedBlocksState = enum
     Initial,
     Requested,
-    Received
+    Received,
+    Persisted
 
   WantedBlocks = object
     startIndex: BlockNumber
@@ -169,6 +177,9 @@ type
     endBlockNumber: BlockNumber
     finalizedBlock: BlockNumber # Block which was downloaded and verified
     chain: AbstractChainDB
+    peerPool: PeerPool
+    trustedPeers: HashSet[Peer]
+    hasOutOfOrderBlocks: bool
 
 proc endIndex(b: WantedBlocks): BlockNumber =
   result = b.startIndex
@@ -176,12 +187,13 @@ proc endIndex(b: WantedBlocks): BlockNumber =
 
 proc availableWorkItem(ctx: SyncContext): int =
   var maxPendingBlock = ctx.finalizedBlock
+  echo "queue len: ", ctx.workQueue.len
   result = -1
   for i in 0 .. ctx.workQueue.high:
     case ctx.workQueue[i].state
     of Initial:
       return i
-    of Received:
+    of Persisted:
       result = i
     else:
       discard
@@ -202,54 +214,95 @@ proc availableWorkItem(ctx: SyncContext): int =
     numBlocks = maxHeadersFetch
   ctx.workQueue[result] = WantedBlocks(startIndex: nextRequestedBlock, numBlocks: numBlocks.uint, state: Initial)
 
+proc persistWorkItem(ctx: SyncContext, wi: var WantedBlocks) =
+  ctx.chain.persistBlocks(wi.headers, wi.bodies)
+  wi.headers.setLen(0)
+  wi.bodies.setLen(0)
+  ctx.finalizedBlock = wi.endIndex
+  wi.state = Persisted
+
+proc persistPendingWorkItems(ctx: SyncContext) =
+  var nextStartIndex = ctx.finalizedBlock + 1
+  var keepRunning = true
+  var hasOutOfOrderBlocks = false
+  debug "Looking for out of order blocks"
+  while keepRunning:
+    keepRunning = false
+    hasOutOfOrderBlocks = false
+    for i in 0 ..< ctx.workQueue.len:
+      let start = ctx.workQueue[i].startIndex
+      if ctx.workQueue[i].state == Received:
+        if start == nextStartIndex:
+          debug "Persisting pending work item", start
+          ctx.persistWorkItem(ctx.workQueue[i])
+          nextStartIndex = ctx.finalizedBlock + 1
+          keepRunning = true
+          break
+        else:
+          hasOutOfOrderBlocks = true
+
+  ctx.hasOutOfOrderBlocks = hasOutOfOrderBlocks
+
 proc returnWorkItem(ctx: SyncContext, workItem: int) =
   let wi = addr ctx.workQueue[workItem]
   let askedBlocks = wi.numBlocks.int
   let receivedBlocks = wi.headers.len
+  let start = wi.startIndex
 
   if askedBlocks == receivedBlocks:
-    debug "Work item complete", startBlock = wi.startIndex,
+    debug "Work item complete", start,
                                 askedBlocks,
                                 receivedBlocks
   else:
-    warn "Work item complete", startBlock = wi.startIndex,
+    warn "Work item complete", start,
                                 askedBlocks,
                                 receivedBlocks
 
-  ctx.chain.persistBlocks(wi.headers, wi.bodies)
-  wi.headers.setLen(0)
-  wi.bodies.setLen(0)
+  if wi.startIndex != ctx.finalizedBlock + 1:
+    info "Blocks out of order", start, final = ctx.finalizedBlock
+    ctx.hasOutOfOrderBlocks = true
+  else:
+    info "Persisting blocks", start
+    ctx.persistWorkItem(wi[])
+    if ctx.hasOutOfOrderBlocks:
+      ctx.persistPendingWorkItems()
 
-proc newSyncContext(startBlock, endBlock: BlockNumber, chain: AbstractChainDB): SyncContext =
+proc newSyncContext(chain: AbstractChainDB, peerPool: PeerPool): SyncContext =
   new result
-  result.endBlockNumber = endBlock
-  result.finalizedBlock = startBlock
   result.chain = chain
+  result.peerPool = peerPool
+  result.trustedPeers = initSet[Peer]()
+  result.finalizedBlock = chain.getBestBlockHeader().blockNumber
 
 proc handleLostPeer(ctx: SyncContext) =
   # TODO: ask the PeerPool for new connections and then call
   # `obtainBlocksFromPeer`
   discard
 
-proc randomOtherPeer(node: EthereumNode, particularPeer: Peer): Peer =
-  # TODO: we can maintain a per-protocol list of peers in EtheruemNode
-  var ethPeersCount = 0
-  for peer in node.peers(eth):
-    if peer != particularPeer:
-      inc ethPeersCount
+proc getBestBlockNumber(p: Peer): Future[BlockNumber] {.async.} =
+  let request = BlocksRequest(
+    startBlock: HashOrNum(isHash: true,
+                          hash: p.state(eth).bestBlockHash),
+    maxResults: 1,
+    skip: 0,
+    reverse: true)
 
-  if ethPeersCount == 0: return nil
-  let peerIdx = random(ethPeersCount) + 1
-  for peer in node.peers(eth):
-    if peer != particularPeer:
-      if peerIdx == ethPeersCount: return peer
-      dec ethPeersCount
+  let latestBlock = await p.getBlockHeaders(request)
 
-proc obtainBlocksFromPeer(peer: Peer, syncCtx: SyncContext) {.async.} =
+  if latestBlock.isSome and latestBlock.get.headers.len > 0:
+    result = latestBlock.get.headers[0].blockNumber
+
+proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
+  # Update our best block number
+  let bestBlockNumber = await peer.getBestBlockNumber()
+  if bestBlockNumber > syncCtx.endBlockNumber:
+    info "New sync end block number", number = bestBlockNumber
+    syncCtx.endBlockNumber = bestBlockNumber
+
   while (let workItemIdx = syncCtx.availableWorkItem(); workItemIdx != -1):
     template workItem: auto = syncCtx.workQueue[workItemIdx]
     workItem.state = Requested
-    debug "Requesting block headers", start = workItem.startIndex, count = workItem.numBlocks
+    debug "Requesting block headers", start = workItem.startIndex, count = workItem.numBlocks, peer
     let request = BlocksRequest(
       startBlock: HashOrNum(isHash: false,
                             number: workItem.startIndex),
@@ -261,7 +314,6 @@ proc obtainBlocksFromPeer(peer: Peer, syncCtx: SyncContext) {.async.} =
     try:
       let results = await peer.getBlockHeaders(request)
       if results.isSome:
-        workItem.state = Received
         shallowCopy(workItem.headers, results.get.headers)
 
         var bodies = newSeq[BlockBody]()
@@ -277,8 +329,11 @@ proc obtainBlocksFromPeer(peer: Peer, syncCtx: SyncContext) {.async.} =
           let b = await peer.getBlockBodies(hashes)
           bodies.add(b.get.blocks)
 
-        shallowCopy(workItem.bodies, bodies)
-        dataReceived = true
+        if bodies.len == workItem.headers.len:
+          shallowCopy(workItem.bodies, bodies)
+          dataReceived = true
+        else:
+          warn "Bodies len != headers.len", bodies = bodies.len, headers = workItem.headers.len
     except:
       # the success case uses `continue`, so we can just fall back to the
       # failure path below. If we signal time-outs with exceptions such
@@ -286,8 +341,10 @@ proc obtainBlocksFromPeer(peer: Peer, syncCtx: SyncContext) {.async.} =
       discard
 
     if dataReceived:
+      workItem.state = Received
       syncCtx.returnWorkItem workItemIdx
     else:
+      workItem.state = Initial
       try:
         await peer.disconnect(SubprotocolReason)
       except:
@@ -295,7 +352,101 @@ proc obtainBlocksFromPeer(peer: Peer, syncCtx: SyncContext) {.async.} =
       syncCtx.handleLostPeer()
       break
 
-  debug "Nothing to sync"
+  debug "Fininshed otaining blocks", peer
+
+proc peersAgreeOnChain(a, b: Peer): Future[bool] {.async.} =
+  # Returns true if one of the peers acknowledges existense of the best block
+  # of another peer.
+  var
+    a = a
+    b = b
+
+  if a.state(eth).bestDifficulty < b.state(eth).bestDifficulty:
+    swap(a, b)
+
+  let request = BlocksRequest(
+    startBlock: HashOrNum(isHash: true,
+                          hash: b.state(eth).bestBlockHash),
+    maxResults: 1,
+    skip: 0,
+    reverse: true)
+
+  let latestBlock = await a.getBlockHeaders(request)
+  result = latestBlock.isSome and latestBlock.get.headers.len > 0
+
+proc randomTrustedPeer(ctx: SyncContext): Peer =
+  var k = rand(ctx.trustedPeers.len - 1)
+  var i = 0
+  for p in ctx.trustedPeers:
+    result = p
+    if i == k: return
+    inc i
+
+proc startSyncWithPeer(ctx: SyncContext, peer: Peer) {.async.} =
+  if ctx.trustedPeers.len >= minPeersToStartSync:
+    # We have enough trusted peers. Validate new peer against trusted
+    if await peersAgreeOnChain(peer, ctx.randomTrustedPeer()):
+      ctx.trustedPeers.incl(peer)
+      asyncCheck ctx.obtainBlocksFromPeer(peer)
+  elif ctx.trustedPeers.len == 0:
+    # Assume the peer is trusted, but don't start sync until we reevaluate
+    # it with more peers
+    debug "Assume trusted peer", peer
+    ctx.trustedPeers.incl(peer)
+  else:
+    # At this point we have some "trusted" candidates, but they are not
+    # "trusted" enough. We evaluate `peer` against all other candidates.
+    # If one of the candidates disagrees, we swap it for `peer`. If all
+    # candidates agree, we add `peer` to trusted set. The peers in the set
+    # will become "fully trusted" (and sync will start) when the set is big
+    # enough
+    var
+      agreeScore = 0
+      disagreedPeer: Peer
+
+    for tp in ctx.trustedPeers:
+      if await peersAgreeOnChain(peer, tp):
+        inc agreeScore
+      else:
+        disagreedPeer = tp
+
+    let disagreeScore = ctx.trustedPeers.len - agreeScore
+
+    if agreeScore == ctx.trustedPeers.len:
+      ctx.trustedPeers.incl(peer) # The best possible outsome
+    elif disagreeScore == 1:
+      info "Peer is no more trusted for sync", peer
+      ctx.trustedPeers.excl(disagreedPeer)
+      ctx.trustedPeers.incl(peer)
+    else:
+      info "Peer not trusted for sync", peer
+
+    if ctx.trustedPeers.len == minPeersToStartSync:
+      for p in ctx.trustedPeers:
+        asyncCheck ctx.obtainBlocksFromPeer(p)
+
+
+proc onPeerConnected(ctx: SyncContext, peer: Peer) =
+  debug "New candidate for sync", peer
+  discard
+  let f = ctx.startSyncWithPeer(peer)
+  f.callback = proc(data: pointer) =
+    if f.failed:
+      error "startSyncWithPeer failed", msg = f.readError.msg, peer
+
+proc onPeerDisconnected(ctx: SyncContext, p: Peer) =
+  echo "onPeerDisconnected"
+  ctx.trustedPeers.excl(p)
+
+proc startSync(ctx: SyncContext) =
+  var po: PeerObserver
+  po.onPeerConnected = proc(p: Peer) =
+    ctx.onPeerConnected(p)
+
+  po.onPeerDisconnected = proc(p: Peer) =
+    ctx.onPeerDisconnected(p)
+
+  ctx.peerPool.addObserver(ctx, po)
 
 proc findBestPeer(node: EthereumNode): (Peer, DifficultyInt) =
   var
@@ -315,78 +466,8 @@ proc fastBlockchainSync*(node: EthereumNode): Future[SyncStatus] {.async.} =
   ## Code for the fast blockchain sync procedure:
   ## https://github.com/ethereum/wiki/wiki/Parallel-Block-Downloads
   ## https://github.com/ethereum/go-ethereum/pull/1889
-  var
-    bestBlockNumber: BlockNumber
-
-  debug "start sync"
-
-  var (bestPeer, bestBlockDifficulty) = node.findBestPeer()
-
-  if bestPeer == nil:
-    return syncNotEnoughPeers
-
-  while true:
-    let request = BlocksRequest(
-      startBlock: HashOrNum(isHash: true,
-                            hash: bestPeer.state(eth).bestBlockHash),
-      maxResults: 1,
-      skip: 0,
-      reverse: true)
-
-    let latestBlock = await bestPeer.getBlockHeaders(request)
-
-    if latestBlock.isSome and latestBlock.get.headers.len > 0:
-      bestBlockNumber = latestBlock.get.headers[0].blockNumber
-      break
-
-    # TODO: maintain multiple "best peer" candidates and send requests
-    # to the second best option
-    bestPeer = node.randomOtherPeer(bestPeer)
-    if bestPeer == nil:
-      return syncNotEnoughPeers
-
-  # does the network agree with our best block?
-  var
-    localChain = node.chain
-    bestLocalHeader = localChain.getBestBlockHeader
-
-  for peer in node.randomPeers(5):
-    if peer.supports(eth):
-      let request = BlocksRequest(
-        startBlock: HashOrNum(isHash: false,
-                              number: bestLocalHeader.blockNumber),
-        maxResults: 1,
-        skip: 0,
-        reverse: true)
-
-      # TODO: check if the majority of peers agree with the block
-      # positioned at our best block number.
-
-  # TODO: In case of disagreement, perform a binary search to locate a
-  # block where we agree.
-
-  if bestLocalHeader.blockNumber >= bestBlockNumber:
-    return syncSuccess
-
-  # 4. Start making requests in parallel for the block headers that we are
-  # missing (by requesting blocks from peers while honoring maxHeadersFetch).
-  # Make sure the blocks hashes add up. Don't count on everyone replying, ask
-  # a different peer in case of time-out. Handle invalid or incomplete replies
-  # properly. The peer may respond with fewer headers than requested (or with
-  # different ones if the peer is not behaving properly).
-  var syncCtx = newSyncContext(bestLocalHeader.blockNumber, bestBlockNumber, node.chain)
-
-  for peer in node.peers:
-    if peer.supports(eth):
-      # TODO: we should also monitor the PeerPool for new peers here and
-      # we should automatically add them to the loop.
-      asyncCheck obtainBlocksFromPeer(peer, syncCtx)
-
-  # 5. Store the obtained headers in the blockchain DB
-
-  # 6. Once the sync is complete, repeat from 1. until to further progress is
-  # possible
-
-  # 7. Start downloading the blockchain state in parallel
-  # (maybe this could start earlier).
+  # TODO: This needs a better interface. Consider removing this function and
+  # exposing SyncCtx
+  var syncCtx = newSyncContext(node.chain, node.peerPool)
+  syncCtx.startSync()
 

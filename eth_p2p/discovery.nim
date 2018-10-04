@@ -258,14 +258,22 @@ proc open*(d: DiscoveryProtocol) =
   let ta = initTAddress(d.address.ip, d.address.udpPort)
   d.transp = newDatagramTransport(processClient, udata = d, local = ta)
 
+proc lookupRandom*(d: DiscoveryProtocol): Future[seq[Node]] {.inline.} =
+  d.kademlia.lookupRandom()
+
+proc run(d: DiscoveryProtocol) {.async.} =
+  while true:
+    discard await d.lookupRandom()
+    await sleepAsync(3000)
+    echo "Discovered nodes: ", d.kademlia.nodesDiscovered
+
 proc bootstrap*(d: DiscoveryProtocol) {.async.} =
   await d.kademlia.bootstrap(d.bootstrapNodes)
 
+  discard d.run()
+
 proc resolve*(d: DiscoveryProtocol, n: NodeId): Future[Node] =
   d.kademlia.resolve(n)
-
-proc lookupRandom*(d: DiscoveryProtocol): Future[seq[Node]] {.inline.} =
-  d.kademlia.lookupRandom()
 
 proc randomNodes*(d: DiscoveryProtocol, count: int): seq[Node] {.inline.} =
   d.kademlia.randomNodes(count)
