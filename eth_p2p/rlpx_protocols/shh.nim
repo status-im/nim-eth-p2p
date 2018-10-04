@@ -22,63 +22,70 @@ import
   eth_common/eth_types,
   eth_keys,
   rlp,
-  nimcrypto/[hash, keccak, rijndael],
+  nimcrypto/[bcmode, hash, keccak, rijndael],
   ../../eth_p2p, ../ecies
 
 const
-  PadLengthMask = 0b11000000'u8
-  PadLengthPos  = 6
-  SignedMask = 0b00100000'u8
+  flagsLen = 1 ## payload flags field length, bytes
+  gcmIVLen = 12 ## Length of IV (seed) used for AES
+  gcmTagLen = 16 ## Length of tag used to authenticate AES-GCM-encrypted message
+  padMaxLen = 256 ## payload will be padded to multiples of this by default
+  payloadLenLenBits = 0b11'u8 ## payload flags length-of-length mask
+  signatureBits = 0b100'u8 ## payload flags signature mask
   whisperVersion* = 6
 
 type
-  Hash = MDigest[256]
-  SymKey = array[256 div 8, byte] ## AES256 key
-  Topic = array[4, byte]
-  Bloom = array[64, byte]  ## XXX: nim-eth-bloom has really quirky API and fixed
+  Hash* = MDigest[256]
+  SymKey* = array[256 div 8, byte] ## AES256 key
+  Topic* = array[4, byte]
+  Bloom* = array[64, byte]  ## XXX: nim-eth-bloom has really quirky API and fixed
   ## bloom size.
   ## stint is massive overkill / poor fit - a bloom filter is an array of bits,
   ## not a number
 
-  Payload = object
+  Payload* = object
     ## Payload is what goes in the data field of the Envelope
 
-    src: Option[PrivateKey] ## Optional key used for signing message
-    dst: Option[PublicKey] ## Optional key used for asymmetric encryption
-    symKey: Option[SymKey] ## Optional key used for symmetric encryption
-    payload: Bytes ## Application data / message contents
-    padding: Bytes ## Padding - if empty, will automatically pad up to
-                   ## nearest 256-byte boundary
+    src*: Option[PrivateKey] ## Optional key used for signing message
+    dst*: Option[PublicKey] ## Optional key used for asymmetric encryption
+    symKey*: Option[SymKey] ## Optional key used for symmetric encryption
+    payload*: Bytes ## Application data / message contents
+    padding*: Option[Bytes] ## Padding - if unset, will automatically pad up to
+                            ## nearest maxPadLen-byte boundary
+  DecodedPayload* = object
+    src*: Option[PublicKey] ## If the message was signed, this is the public key
+                            ## of the source
+    payload*: Bytes ## Application data / message contents
 
-  Envelope = object
+  Envelope* = object
     ## What goes on the wire in the whisper protocol - a payload and some
     ## book-keeping
     ## Don't touch field order, there's lots of macro magic that depends on it
-    expiry: uint32 ## Unix timestamp when message expires
-    ttl: uint32 ## Time-to-live, seconds - message was created at (expiry - ttl)
-    topic: Topic
-    data: Bytes ## Payload, as given by user
-    nonce: uint64 ## Nonce used for proof-of-work calculation
+    expiry*: uint32 ## Unix timestamp when message expires
+    ttl*: uint32 ## Time-to-live, seconds - message was created at (expiry - ttl)
+    topic*: Topic
+    data*: Bytes ## Payload, as given by user
+    nonce*: uint64 ## Nonce used for proof-of-work calculation
 
-  Message = object
+  Message* = object
     ## An Envelope with a few cached properties
 
-    env: Envelope
-    hash: Hash ## Hash, as calculated for proof-of-work
-    size: uint64 ## RLP-encoded size of message
-    pow: float64 ## Calculated proof-of-work
-    bloom: Bloom ## Filter sent to direct peers for topic-based filtering
+    env*: Envelope
+    hash*: Hash ## Hash, as calculated for proof-of-work
+    size*: uint64 ## RLP-encoded size of message
+    pow*: float64 ## Calculated proof-of-work
+    bloom*: Bloom ## Filter sent to direct peers for topic-based filtering
 
-  Queue = object
+  Queue* = object
     ## Bounded message repository
     ##
     ## Whisper uses proof-of-work to judge the usefulness of a message staying
     ## in the "cloud" - messages with low proof-of-work will be removed to make
     ## room for those with higher pow, even if they haven't expired yet.
     ## Larger messages and those with high time-to-live will require more pow.
-    items: seq[Message] ## Sorted by proof-of-work
+    items*: seq[Message] ## Sorted by proof-of-work
 
-    capacity: int ## Max messages to keep. \
+    capacity*: int ## Max messages to keep. \
     ## XXX: really big messages can cause excessive mem usage when using msg \
     ##      count
 
@@ -118,7 +125,7 @@ proc calcPow(size, ttl: uint64, hash: Hash): float64 =
   let bits = leadingZeroBits(hash) + 1
   return pow(2.0, bits.float64) / (size.float64 * ttl.float64)
 
-proc topicBloom(topic: Topic): Bloom =
+proc topicBloom*(topic: Topic): Bloom =
   ## Whisper uses 512-bit bloom filters meaning 9 bits of indexing - 3 9-bit
   ## indexes into the bloom are created using the first 3 bytes of the topic and
   ## complementing each byte with an extra bit from the last topic byte
@@ -130,38 +137,80 @@ proc topicBloom(topic: Topic): Bloom =
     assert idx <= 511
     result[idx div 8] = result[idx div 8] or byte(1 shl (idx and 7'u16))
 
+proc encryptAesGcm(plain: openarray[byte], key: SymKey,
+    iv: array[gcmIVLen, byte]): Bytes =
+  ## Encrypt using AES-GCM, making sure to append tag and iv, in that order
+  var gcm: GCM[aes256]
+  result = newSeqOfCap[byte](plain.len + gcmTagLen + iv.len)
+  result.setLen plain.len
+  gcm.init(key, iv, [])
+  gcm.encrypt(plain, result)
+  var tag: array[gcmTagLen, byte]
+  gcm.getTag(tag)
+  result.add tag
+  result.add iv
+
+proc decryptAesGcm(cipher: openarray[byte], key: SymKey): Option[Bytes] =
+  ## Decrypt AES-GCM ciphertext and validate authenticity - assumes
+  ## cipher-tag-iv format of the buffer
+  if cipher.len < gcmTagLen + gcmIVLen:
+    debug "cipher missing tag/iv", len = cipher.len
+    return
+  let plainLen = cipher.len - gcmTagLen - gcmIVLen
+  var gcm: GCM[aes256]
+  var res = newSeq[byte](plainLen)
+  let iv = cipher[^gcmIVLen .. ^1]
+  let tag = cipher[^(gcmIVLen + gcmTagLen) .. ^(gcmIVLen + 1)]
+  gcm.init(key, iv, [])
+  gcm.decrypt(cipher[0 ..< ^(gcmIVLen + gcmTagLen)], res)
+  var tag2: array[gcmTagLen, byte]
+  gcm.getTag(tag2)
+
+  if tag != tag2:
+    debug "cipher tag mismatch", len = cipher.len, tag, tag2
+    return
+  return some(res)
+
 # Payloads ---------------------------------------------------------------------
 
 # Several differences between geth and parity - this code is closer to geth
 # simply because that makes it closer to EIP 627 - see also:
 # https://github.com/paritytech/parity-ethereum/issues/9652
 
-proc encode*(self: Payload): Bytes =
+proc encode*(self: Payload): Option[Bytes] =
   ## Encode a payload according so as to make it suitable to put in an Envelope
+  ## The format follows EIP 627 - https://eips.ethereum.org/EIPS/eip-627
 
-  const
-    FlagsLen = 1
-    PadMaxLen = 256
+  # XXX is this limit too high? We could limit it here but the protocol
+  #     technically supports it..
+  if self.payload.len >= 256*256*256:
+    notice "Payload exceeds max length", len = self.payload.len
+    return
 
   # length of the payload length field :)
-  # XXX: deal with those extra large inputs we can't send
   let payloadLenLen =
     if self.payload.len >= 256*256: 3'u8
     elif self.payload.len >= 256: 2'u8
     else: 1'u8
 
   let signatureLen =
-    if self.src.isSome(): RawSignatureSize
+    if self.src.isSome(): eth_keys.RawSignatureSize
     else: 0
 
-  # Upper boundary for buffer needs - we'll likely use a bit less
-  let maxLen = FlagsLen + payloadLenLen.int + self.payload.len +
-    self.padding.len + signatureLen + PadMaxLen
+  # useful data length
+  let dataLen = flagsLen + payloadLenLen.int + self.payload.len + signatureLen
 
-  var plain = newSeqOfCap[byte](maxLen)
+  let padLen =
+    if self.padding.isSome(): self.padding.get().len
+    else: padMaxLen - (dataLen mod padMaxLen)
+
+  # buffer space that we need to allocate
+  let totalLen = dataLen + padLen
+
+  var plain = newSeqOfCap[byte](totalLen)
 
   let signatureFlag =
-    if self.src.isSome(): 0b100'u8
+    if self.src.isSome(): signatureBits
     else: 0'u8
 
   # byte 0: flags with payload length length and presence of signature
@@ -169,65 +218,118 @@ proc encode*(self: Payload): Bytes =
 
   # next, length of payload - little endian (who comes up with this stuff? why
   # can't the world just settle on one endian?)
-  let payloadLen = self.payload.len.uint32.toLE
+  let payloadLenLE = self.payload.len.uint32.toLE
 
   # No, I have no love for nim closed ranges - such a mess to remember the extra
   # < or risk off-by-ones when working with lengths..
-  plain.add payloadLen[0..<payloadLenLen]
+  plain.add payloadLenLE[0..<payloadLenLen]
   plain.add self.payload
 
-  if self.padding.len > 0:
-    plain.add self.padding
+  if self.padding.isSome():
+    plain.add self.padding.get()
   else:
-    let len = FlagsLen + payloadLenLen.int + self.payload.len + signatureLen
-    let padLen = (len + 255) mod 256
     plain.add repeat(0'u8, padLen) # XXX: should be random
 
   if self.src.isSome(): # Private key present - signature requested
     let hash = keccak256.digest(plain)
     var sig: Signature
-    # XXX: ugh, this raises sometimes, and returns a status code.. lovely.
-    # XXX: handle some errors, or something
-    discard signRawMessage(hash.data, self.src.get(), sig)
+    let err = signRawMessage(hash.data, self.src.get(), sig)
+    if err != EthKeysStatus.Success:
+      notice "Signing message failed", err
+      return
+
     plain.add sig.getRaw()
 
   if self.dst.isSome(): # Asymmetric key present - encryption requested
-    result.setLen eciesEncryptedLength(plain.len)
-    # XXX: handle those errors here also
-    discard eciesEncrypt(plain, result, self.dst.get())
-  elif self.symKey.isSome(): # Symmetric key present - encryption requested
-    # https://github.com/cheatfate/nimcrypto/issues/11
-    assert false, "no 256-bit GCM support in nimcrypto"
-  else: # No encryption!
-    result = plain
+    var res = newSeq[byte](eciesEncryptedLength(plain.len))
+    let err = eciesEncrypt(plain, res, self.dst.get())
+    if err != EciesStatus.Success:
+      notice "Encryption failed", err
+      return
+    return some(res)
 
-proc decode*(self: var Payload, data: openarray[byte]): bool =
+  if self.symKey.isSome(): # Symmetric key present - encryption requested
+    var iv: array[gcmIVLen, byte] # XXX: random!
+    return some(encryptAesGcm(plain, self.symKey.get(), iv))
+
+  # No encryption!
+  return some(plain)
+
+proc decode*(data: openarray[byte], dst = none[PrivateKey](),
+    symKey = none[SymKey]()): Option[DecodedPayload] =
   ## Decode data into payload, using keys found in self
 
+  # Careful throughout - data coming from unknown source
+
+  var res: DecodedPayload
+
   var plain: Bytes
-  if self.src.isSome():
+  if dst.isSome():
+    # XXX: eciesDecryptedLength is pretty fragile, API-wise.. is this really the
+    #      way to check for errors / sufficient length?
+    let plainLen = eciesDecryptedLength(data.len)
+    if plainLen < 0:
+      debug "Not enough data to decrypt", len = data.len
+      return
+
     plain.setLen(eciesDecryptedLength(data.len))
-    if eciesDecrypt(data, plain, self.src.get()) != EciesStatus.Success:
-      return false
-  elif self.symKey.isSome():
-    # https://github.com/cheatfate/nimcrypto/issues/11
-    assert false, "no 256-bit GCM support in nimcrypto"
+    if eciesDecrypt(data, plain, dst.get()) != EciesStatus.Success:
+      debug "Couldn't decrypt using asymmetric key", len = data.len
+      return
+  elif symKey.isSome():
+    let tmp = decryptAesGcm(data, symKey.get())
+    if tmp.isNone():
+      debug "Couldn't decrypt using symmetric key", len = data.len
+      return
+
+    plain = tmp.get()
   else: # No encryption!
     plain = @data
 
-  # XXX: bounds checking??
-  let payloadLenLen = plain[0] and 0b11'u8
-  let hasSignature = (plain[0] and 0b100'u8) != 0
+  if plain.len < 2: # Minimum 1 byte flags, 1 byte payload len
+    debug "Missing flags or payload length", len = plain.len
+    return
 
-  var payloadLen32: array[4, byte]
+  var pos = 0
 
-  for i in 0..<payloadLenLen.int: payloadLen32[i] = data[1 + i]
+  let payloadLenLen = int(plain[pos] and 0b11'u8)
+  let hasSignature = (plain[pos] and 0b100'u8) != 0
 
-  let payloadLen = payloadLen32.fromLE32()
+  pos += 1
 
-  self.payload.add data[2..<payloadLen + 2]
+  if plain.len < pos + payloadLenLen:
+    debug "Missing payload length", len = plain.len, pos, payloadLenLen
+    return
 
-  # XXX check signatures and stuff..
+  var payloadLenLE: array[4, byte]
+
+  for i in 0..<payloadLenLen: payloadLenLE[i] = plain[pos + i]
+  pos += payloadLenLen
+
+  let payloadLen = int(payloadLenLE.fromLE32())
+  if plain.len < pos + payloadLen:
+    debug "Missing payload", len = plain.len, pos, payloadLen
+    return
+
+  res.payload = plain[pos ..< pos + payloadLen]
+
+  pos += payloadLen
+
+  if hasSignature:
+    if plain.len < (eth_keys.RawSignatureSize + pos):
+      debug "Missing expected signature", len = plain.len
+      return
+
+    let sig = plain[^eth_keys.RawSignatureSize .. ^1]
+    let hash = keccak256.digest(plain[0 ..< ^eth_keys.RawSignatureSize])
+    var key: PublicKey
+    let err = recoverSignatureKey(sig, hash.data, key)
+    if err != EthKeysStatus.Success:
+      debug "Failed to recover signature key", err
+      return
+    res.src = some(key)
+
+  return some(res)
 
 # Envelopes --------------------------------------------------------------------
 
@@ -272,7 +374,7 @@ proc minePow*(self: Envelope, seconds: float): uint64 =
       bestPow = pow
       result = i.uint64
 
-proc calcPowHash(self: Envelope): Hash =
+proc calcPowHash*(self: Envelope): Hash =
   ## Calculate the message hash, as done during mining - this can be used to
   ## verify proof-of-work
 
@@ -292,7 +394,7 @@ proc cmpPow(a, b: Message): int =
   elif a.pow == b.pow: 0
   else: -1
 
-proc initMessage(env: Envelope): Message =
+proc initMessage*(env: Envelope): Message =
   result.env = env
   result.hash = env.calcPowHash()
   result.size = env.toRlp().len().uint64 # XXX: calc len without creating RLP
@@ -300,7 +402,7 @@ proc initMessage(env: Envelope): Message =
 
 # Queues -----------------------------------------------------------------------
 
-proc initQueue(capacity: int): Queue =
+proc initQueue*(capacity: int): Queue =
   result.items = newSeqOfCap[Message](capacity)
   result.capacity = capacity
 
@@ -309,7 +411,7 @@ proc prune(self: var Queue) =
   let now = epochTime().uint64
   self.items.keepIf(proc(m: Message): bool = m.env.expiry > now)
 
-proc add(self: var Queue, msg: Message) =
+proc add*(self: var Queue, msg: Message) =
   ## Add a message to the queue.
   ## If we're at capacity, we will be removing, in order:
   ## * expired messages
@@ -353,50 +455,3 @@ rlpxProtocol shh, whisperVersion:
 
   proc p2pMessage(peer: Peer, envelope: Envelope) =
     discard
-
-if isMainModule:
-  block:
-    # Geth test: https://github.com/ethersphere/go-ethereum/blob/d3441ebb563439bac0837d70591f92e2c6080303/whisper/whisperv6/whisper_test.go#L834
-    let top0 = [byte 0, 0, 255, 6]
-    var x: Bloom
-    x[0] = byte 1
-    x[32] = byte 1
-    x[^1] = byte 128
-    doAssert @(top0.topicBloom) == @x
-
-  # example from https://github.com/paritytech/parity-ethereum/blob/93e1040d07e385d1219d00af71c46c720b0a1acf/whisper/src/message.rs#L439
-  let
-    env0 = Envelope(expiry:100000, ttl: 30, topic: [byte 0, 0, 0, 0], data: repeat(byte 9, 256), nonce: 1010101)
-    env1 = Envelope(expiry:100000, ttl: 30, topic: [byte 0, 0, 0, 0], data: repeat(byte 9, 256), nonce: 1010102)
-
-  block:
-    # XXX checked with parity, should check with geth too - found a potential bug
-    #     in parity while playing with it:
-    #     https://github.com/paritytech/parity-ethereum/issues/9625
-    doAssert $calcPowHash(env0) == "A13B48480AEB3123CD2358516E2E8EE9FCB0F4CB37E68CD09FDF7F9A7E14767C"
-
-  block:
-    var queue = initQueue(1)
-
-    let msg0 = initMessage(env0)
-    let msg1 = initMessage(env1)
-
-    queue.add(msg0)
-    queue.add(msg1)
-
-    doAssert queue.items.len() == 1
-
-    doAssert queue.items[0].env.nonce ==
-      (if msg0.pow > msg1.pow: msg0.env.nonce else: msg1.env.nonce)
-
-  block:
-    var queue = initQueue(2)
-
-    queue.add(initMessage(env0))
-    queue.add(initMessage(env1))
-
-    doAssert queue.items.len() == 2
-
-  block:
-    doAssert rlp.encode(env0) ==
-      rlp.encodeList(env0.expiry, env0.ttl, env0.topic, env0.data, env0.nonce)
