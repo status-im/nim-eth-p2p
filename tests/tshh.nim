@@ -19,8 +19,8 @@ suite "Whisper payload":
     let encoded = shh.encode(payload)
 
     let decoded = shh.decode(encoded.get())
-    doAssert decoded.isSome()
-    doAssert payload.payload == decoded.get().payload
+    check decoded.isSome()
+    check payload.payload == decoded.get().payload
 
   test "should roundtrip with symmetric encryption":
     var symKey: SymKey
@@ -28,8 +28,8 @@ suite "Whisper payload":
     let encoded = shh.encode(payload)
 
     let decoded = shh.decode(encoded.get(), symKey = some(symKey))
-    doAssert decoded.isSome()
-    doAssert payload.payload == decoded.get().payload
+    check decoded.isSome()
+    check payload.payload == decoded.get().payload
 
   test "should roundtrip with signature":
     let privKey = eth_keys.newPrivateKey()
@@ -38,9 +38,9 @@ suite "Whisper payload":
     let encoded = shh.encode(payload)
 
     let decoded = shh.decode(encoded.get())
-    doAssert decoded.isSome()
-    doAssert payload.payload == decoded.get().payload
-    doAssert privKey.getPublicKey() == decoded.get().src.get()
+    check decoded.isSome()
+    check payload.payload == decoded.get().payload
+    check privKey.getPublicKey() == decoded.get().src.get()
 
   test "should roundtrip with asymmetric encryption":
     let privKey = eth_keys.newPrivateKey()
@@ -50,8 +50,8 @@ suite "Whisper payload":
     let encoded = shh.encode(payload)
 
     let decoded = shh.decode(encoded.get(), dst = some(privKey))
-    doAssert decoded.isSome()
-    doAssert payload.payload == decoded.get().payload
+    check decoded.isSome()
+    check payload.payload == decoded.get().payload
 
   test "should roundtrip with asymmetric encryption":
     # Geth test: https://github.com/ethersphere/go-ethereum/blob/d3441ebb563439bac0837d70591f92e2c6080303/whisper/whisperv6/whisper_test.go#L834
@@ -60,7 +60,7 @@ suite "Whisper payload":
     x[0] = byte 1
     x[32] = byte 1
     x[^1] = byte 128
-    doAssert @(top0.topicBloom) == @x
+    check @(top0.topicBloom) == @x
 
 # example from https://github.com/paritytech/parity-ethereum/blob/93e1040d07e385d1219d00af71c46c720b0a1acf/whisper/src/message.rs#L439
 let
@@ -76,7 +76,7 @@ suite "Whisper envelope":
     # XXX checked with parity, should check with geth too - found a potential bug
     #     in parity while playing with it:
     #     https://github.com/paritytech/parity-ethereum/issues/9625
-    doAssert $calcPowHash(env0) ==
+    check $calcPowHash(env0) ==
       "A13B48480AEB3123CD2358516E2E8EE9FCB0F4CB37E68CD09FDF7F9A7E14767C"
 
 suite "Whisper queue":
@@ -89,9 +89,9 @@ suite "Whisper queue":
     queue.add(msg0)
     queue.add(msg1)
 
-    doAssert queue.items.len() == 1
+    check queue.items.len() == 1
 
-    doAssert queue.items[0].env.nonce ==
+    check queue.items[0].env.nonce ==
       (if msg0.pow > msg1.pow: msg0.env.nonce else: msg1.env.nonce)
 
   test "should not throw out messages as long as there is capacity":
@@ -100,8 +100,8 @@ suite "Whisper queue":
     queue.add(initMessage(env0))
     queue.add(initMessage(env1))
 
-    doAssert queue.items.len() == 2
+    check queue.items.len() == 2
 
   test "check field order against expected rlp order":
-    doAssert rlp.encode(env0) ==
+    check rlp.encode(env0) ==
       rlp.encodeList(env0.expiry, env0.ttl, env0.topic, env0.data, env0.nonce)
