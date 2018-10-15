@@ -7,31 +7,127 @@
 #  Apache License, version 2.0, (LICENSE-APACHEv2)
 #            MIT license (LICENSE-MIT)
 
-import sequtils
-import eth_keys, asyncdispatch2
-import eth_p2p
+import
+  sequtils, strformat, options, unittest,
+  chronicles, asyncdispatch2, rlp, eth_keys,
+  eth_p2p, eth_p2p/mock_peers
 
-const clientId = "nim-eth-p2p/0.0.1"
+const
+  clientId = "nim-eth-p2p/0.0.1"
 
-rlpxProtocol dmy, 1: # Rlpx would be useless with no subprotocols. So we define a dummy proto
-  proc foo(peer: Peer)
+type
+  AbcPeer = ref object
+    peerName: string
+    lastResponse: string
+
+  XyzPeer = ref object
+    messages: int
+
+  AbcNetwork = ref object
+    peers: seq[string]
+
+rlpxProtocol abc(version = 1,
+                 peerState = AbcPeer,
+                 networkState = AbcNetwork,
+                 timeout = 100):
+
+  onPeerConnected do (peer: Peer):
+    await peer.hi "Bob"
+    let response = await peer.nextMsg(abc.hi)
+    peer.networkState.peers.add response.name
+
+  onPeerDisconnected do (peer: Peer, reason: DisconnectionReason):
+    echo "peer disconnected", peer
+
+  requestResponse:
+    proc abcReq(p: Peer, n: int) =
+      echo "got req ", n
+      await p.abcRes(reqId, &"response to #{n}")
+
+    proc abcRes(p: Peer, data: string) =
+      echo "got response ", data
+
+  proc hi(p: Peer, name: string) =
+    echo "got hi from ", name
+    p.state.peerName = name
+    let query = 123
+    echo "sending req #", query
+    var r = await p.abcReq(query)
+    if r.isSome:
+      p.state.lastResponse = r.get.data
+    else:
+      p.state.lastResponse = "timeout"
+
+rlpxProtocol xyz(version = 1,
+                 peerState = XyzPeer,
+                 useRequestIds = false,
+                 timeout = 100):
+
+  proc foo(p: Peer, s: string, a, z: int) =
+    p.state.messages += 1
+    if p.supports(abc):
+      echo p.state(abc).peerName
+
+  proc bar(p: Peer, i: int, s: string)
+
+  requestResponse:
+    proc xyzReq(p: Peer, n: int, timeout = 3000) =
+      echo "got req ", n
+
+    proc xyzRes(p: Peer, data: string) =
+      echo "got response ", data
+
+proc defaultTestingHandshake(_: type abc): abc.hi =
+  result.name = "John Doe"
 
 proc localAddress(port: int): Address =
   let port = Port(port)
   result = Address(udpPort: port, tcpPort: port, ip: parseIpAddress("127.0.0.1"))
 
-proc test() {.async.} =
-  let node1Keys = newKeyPair()
-  let node1Address = localAddress(30303)
-  var node1 = newEthereumNode(node1Keys, node1Address, 1, nil)
-  node1.startListening()
+template asyncTest(name, body: untyped) =
+  test name:
+    proc scenario {.async.} = body
+    waitFor scenario()
 
-  let node2Keys = newKeyPair()
-  var node2 = newEthereumNode(node2Keys, localAddress(30304), 1, nil)
+asyncTest "network with 3 peers using custom protocols":
+  let localKeys = newKeyPair()
+  let localAddress = localAddress(30303)
+  var localNode = newEthereumNode(localKeys, localAddress, 1, nil)
+  localNode.initProtocolStates()
+  localNode.startListening()
 
-  let node1AsRemote = newNode(initENode(node1Keys.pubKey, node1Address))
-  let peer = await node2.rlpxConnect(node1AsRemote)
+  var mock1 = newMockPeer do (m: MockConf):
+    m.addHandshake abc.hi(name: "Alice")
 
-  doAssert(not peer.isNil)
+    m.expect(abc.abcReq) do (peer: Peer, data: Rlp):
+      let reqId = data.readReqId()
+      await peer.abcRes(reqId, "mock response")
+      await sleepAsync(100)
+      let r = await peer.abcReq(1)
+      assert r.get.data == "response to #1"
 
-waitFor test()
+    m.expect(abc.abcRes)
+
+  var mock2 = newMockPeer do (m: MockConf):
+    m.addCapability xyz
+    m.addCapability abc
+
+    m.expect(abc.abcReq) # we'll let this one time out
+
+    m.expect(xyz.xyzReq) do (peer: Peer):
+      echo "got xyz req"
+      await peer.xyzRes("mock peer data")
+
+  discard await mock1.rlpxConnect(localNode)
+  let mock2Connection = await localNode.rlpxConnect(mock2)
+
+  let r = await mock2Connection.xyzReq(10)
+  check r.get.data == "mock peer data"
+
+  let abcNetState = localNode.protocolState(abc)
+
+  check:
+    abcNetState.peers.len == 2
+    "Alice" in abcNetState.peers
+    "John Doe" in abcNetState.peers
+

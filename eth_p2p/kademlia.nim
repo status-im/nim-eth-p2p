@@ -46,7 +46,7 @@ const
   FIND_CONCURRENCY = 3                  # parallel find node lookups
   ID_SIZE = 256
 
-proc toNodeId(pk: PublicKey): NodeId =
+proc toNodeId*(pk: PublicKey): NodeId =
   readUintBE[256](keccak256.digest(pk.getRaw()).data)
 
 proc newNode*(pk: PublicKey, address: Address): Node =
@@ -67,8 +67,10 @@ proc newNode*(enode: ENode): Node =
 proc distanceTo(n: Node, id: NodeId): UInt256 = n.id xor id
 
 proc `$`*(n: Node): string =
-  # "Node[" & $n.node & "]"
-  "Node[" & $n.node.address.ip & ":" & $n.node.address.udpPort & "]"
+  if n == nil:
+    "Node[local]"
+  else:
+    "Node[" & $n.node.address.ip & ":" & $n.node.address.udpPort & "]"
 
 proc hash*(n: Node): hashes.Hash = hash(n.node.pubkey.data)
 proc `==`*(a, b: Node): bool = a.node.pubkey == b.node.pubkey

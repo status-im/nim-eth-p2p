@@ -9,30 +9,31 @@
 #
 
 import
-  tables, deques, macros, sets, algorithm, hashes, times,
-  random, options, sequtils, typetraits, os,
-  asyncdispatch2, asyncdispatch2/timer,
-  rlp, ranges/[stackarrays, ptr_arith], nimcrypto, chronicles,
-  eth_keys, eth_common,
-  eth_p2p/[kademlia, discovery, auth, rlpxcrypt, enode]
+  tables, algorithm, random,
+  asyncdispatch2, asyncdispatch2/timer, chronicles,
+  eth_keys, eth_common/eth_types,
+  eth_p2p/[kademlia, discovery, enode, peer_pool, rlpx],
+  eth_p2p/private/types
+
+types.forwardPublicTypes
 
 export
-  enode, kademlia, options
+  rlpx, enode, kademlia
 
-proc addProtocol(n: var EthereumNode, p: ProtocolInfo) =
+proc addCapability*(n: var EthereumNode, p: ProtocolInfo) =
   assert n.connectionState == ConnectionState.None
-  let pos = lowerBound(n.rlpxProtocols, p)
+  let pos = lowerBound(n.rlpxProtocols, p, rlpx.cmp)
   n.rlpxProtocols.insert(p, pos)
-  n.rlpxCapabilities.insert(Capability(name: p.name, version: p.version), pos)
+  n.rlpxCapabilities.insert(p.asCapability, pos)
 
 template addCapability*(n: var EthereumNode, Protocol: type) =
-  addProtocol(n, Protocol.protocolInfo)
+  addCapability(n, Protocol.protocolInfo)
 
 proc newEthereumNode*(keys: KeyPair,
                       address: Address,
                       networkId: uint,
                       chain: AbstractChainDB,
-                      clientId = clientId,
+                      clientId = "nim-eth-p2p/0.2.0", # TODO: read this value from nimble somehow
                       addAllCapabilities = true): EthereumNode =
   new result
   result.keys = keys
@@ -45,7 +46,7 @@ proc newEthereumNode*(keys: KeyPair,
 
   if addAllCapabilities:
     for p in rlpxProtocols:
-      result.addProtocol(p)
+      result.addCapability(p)
 
 proc processIncoming(server: StreamServer,
                      remote: StreamTransport): Future[void] {.async, gcsafe.} =
@@ -69,6 +70,13 @@ proc startListening*(node: EthereumNode) =
                                               udata = cast[pointer](node))
   node.listeningServer.start()
 
+proc initProtocolStates*(node: EthereumNode) =
+  # TODO: This should be moved to a private module
+  node.protocolStates.newSeq(rlpxProtocols.len)
+  for p in node.rlpxProtocols:
+    if p.networkStateInitializer != nil:
+      node.protocolStates[p.index] = ((p.networkStateInitializer)(node))
+
 proc connectToNetwork*(node: EthereumNode,
                        bootstrapNodes: seq[ENode],
                        startListening = true,
@@ -80,17 +88,14 @@ proc connectToNetwork*(node: EthereumNode,
                                         node.address,
                                         bootstrapNodes)
 
-  node.peerPool = newPeerPool(node, node.chain, node.networkId,
+  node.peerPool = newPeerPool(node, node.networkId,
                               node.keys, node.discovery,
                               node.clientId, node.address.tcpPort)
 
   if startListening:
     eth_p2p.startListening(node)
 
-  node.protocolStates.newSeq(rlpxProtocols.len)
-  for p in node.rlpxProtocols:
-    if p.networkStateInitializer != nil:
-      node.protocolStates[p.index] = p.networkStateInitializer(node)
+  node.initProtocolStates()
 
   if startListening:
     node.listeningServer.start()

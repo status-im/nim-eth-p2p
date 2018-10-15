@@ -24,6 +24,8 @@ the `EthereumNode` type:
 
 ``` nim
 proc newEthereumNode*(keys: KeyPair,
+                      listeningAddress: Address,
+                      networkId: uint,
                       chain: AbstractChainDB,
                       clientId = "nim-eth-p2p",
                       addAllCapabilities = true): EthereumNode =
@@ -37,6 +39,14 @@ proc newEthereumNode*(keys: KeyPair,
   See the [eth_keys](https://github.com/status-im/nim-eth-keys)
   library for utilities that will help you generate and manage
   such keys.
+
+`listeningAddress`:
+  The network interface and port where your client will be
+  accepting incoming connections.
+
+`networkId`:
+  The Ethereum network ID. The client will disconnect immediately
+  from any peers who don't use the same network.
 
 `chain`:
   An abstract instance of the Ethereum blockchain associated
@@ -60,7 +70,7 @@ proc newEthereumNode*(keys: KeyPair,
   node.addCapability(eth)
   node.addCapability(ssh)
   ```
-  
+
   Each supplied protocol identifier is a name of a protocol introduced
   by the `rlpxProtocol` macro discussed later in this document.
 
@@ -69,16 +79,14 @@ the network. To start the connection process, call `node.connectToNetwork`:
 
 ``` nim
 proc connectToNetwork*(node: var EthereumNode,
-                       address: Address,
-                       listeningPort = Port(30303),
                        bootstrapNodes: openarray[ENode],
-                       networkId: int,
-                       startListening = true)
+                       startListening = true,
+                       enableDiscovery = true)
 ```
 
 The `EthereumNode` will automatically find and maintan a pool of peers
 using the Ethereum node discovery protocol. You can access the pool as
-`node.peers`. 
+`node.peers`.
 
 ## Communicating with Peers using RLPx
 
@@ -106,7 +114,7 @@ a 3-letter identifier for the protocol and the current protocol version:
 Here is how the [DevP2P wire protocol](https://github.com/ethereum/wiki/wiki/%C3%90%CE%9EVp2p-Wire-Protocol) might look like:
 
 ``` nim
-rlpxProtocol p2p, 0:
+rlpxProtocol p2p(version = 0):
   proc hello(peer: Peer,
              version: uint,
              clientId: string,
@@ -130,25 +138,28 @@ and the asynchronous code responsible for handling the incoming messages.
 
 ### Protocol state
 
-The protocol implementations are expected to maintain a state and to act like
-a state machine handling the incoming messages. To achieve this, each protocol
-may define a `State` object that can be accessed as a `state` field of the `Peer`
-object:
+The protocol implementations are expected to maintain a state and to act
+like a state machine handling the incoming messages. You are allowed to
+define an arbitrary state type that can be specified in the `peerState`
+protocol option. Later, instances of the state object can be obtained
+though the `state` pseudo-field of the `Peer` object:
 
 ``` nim
-rlpxProtocol abc, 1:
-  type State = object
-    receivedMsgsCount: int
+type AbcPeerState = object
+  receivedMsgsCount: int
+
+rlpxProtocol abc(version = 1,
+                 peerState = AbcPeerState):
 
   proc incomingMessage(p: Peer) =
     p.state.receivedMsgsCount += 1
 
 ```
 
-Besides the per-peer state demonstrated above, there is also support for
-maintaining a network-wide state. In the example above, we'll just have
-to change the name of the state type to `NetworkState` and the accessor
-expression to `p.network.state`.
+Besides the per-peer state demonstrated above, there is also support
+for maintaining a network-wide state. It's enabled by specifying the
+`networkState` option of the protocol and the state object can be obtained
+through accessor of the same name.
 
 The state objects are initialized to zero by default, but you can modify
 this behaviour by overriding the following procs for your state types:
@@ -158,11 +169,8 @@ proc initProtocolState*(state: var MyPeerState, p: Peer)
 proc initProtocolState*(state: var MyNetworkState, n: EthereumNode)
 ```
 
-Please note that the state type will have to be placed outside of the
-protocol definition in order to achieve this.
-
-Sometimes, you'll need to access the state of another protocol. To do this,
-specify the protocol identifier to the `state` accessors:
+Sometimes, you'll need to access the state of another protocol.
+To do this, specify the protocol identifier to the `state` accessors:
 
 ``` nim
   echo "ABC protocol messages: ", peer.state(abc).receivedMsgCount
@@ -218,7 +226,7 @@ rlpxProtocol les, 2:
   requestResponse:
     proc getProofs(p: Peer, proofs: openarray[ProofRequest])
     proc proofs(p: Peer, BV: uint, proofs: openarray[Blob])
-  
+
   ...
 ```
 
@@ -234,16 +242,15 @@ be specified for each individual call and the default value can be
 overridden on the level of individual message, or the entire protocol:
 
 ``` nim
-rlpxProtocol abc, 1:
-  timeout = 5000 # value in milliseconds
-  useRequestIds = false
-  
+rlpxProtocol abc(version = 1,
+                 useRequestIds = false,
+                 timeout = 5000): # value in milliseconds
   requestResponse:
     proc myReq(dataId: int, timeout = 3000)
     proc myRes(data: string)
 ```
 
-By default, the library will take care of inserting a hidden `reqId` 
+By default, the library will take care of inserting a hidden `reqId`
 parameter as used in the [LES protocol](https://github.com/zsfelfoldi/go-ethereum/wiki/Light-Ethereum-Subprotocol-%28LES%29),
 but you can disable this behavior by overriding the protocol setting
 `useRequestIds`.
@@ -255,7 +262,7 @@ also include handlers for certain important events such as newly connected
 peers or misbehaving or disconnecting peers:
 
 ``` nim
-rlpxProtocol les, 2:
+rlpxProtocol les(version = 2):
   onPeerConnected do (peer: Peer):
     asyncCheck peer.status [
       "networkId": rlp.encode(1),

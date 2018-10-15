@@ -1,4 +1,10 @@
-block:
+import
+  deques, tables,
+  package_visible_types,
+  rlp, asyncdispatch2, eth_common/eth_types, eth_keys,
+  ../enode, ../kademlia, ../discovery, ../options, ../rlpxcrypt
+
+packageTypes:
   type
     EthereumNode* = ref object
       networkId*: uint
@@ -15,9 +21,9 @@ block:
       peerPool*: PeerPool
 
     Peer* = ref object
-      transp: StreamTransport
+      transport: StreamTransport
       dispatcher: Dispatcher
-      nextReqId: int
+      lastReqId*: int
       network*: EthereumNode
       secretsState: SecretState
       connectionState: ConnectionState
@@ -27,7 +33,7 @@ block:
       awaitedMessages: seq[FutureBase]
 
     OutstandingRequest = object
-      reqId: int
+      id: int
       future: FutureBase
       timeoutAt: uint64
 
@@ -85,12 +91,14 @@ block:
       #
       protocolOffsets: seq[int]
       messages: seq[ptr MessageInfo]
+      activeProtocols: seq[ProtocolInfo]
 
     PeerObserver* = object
       onPeerConnected*: proc(p: Peer)
       onPeerDisconnected*: proc(p: Peer)
 
-    MessageHandler = proc(x: Peer, data: Rlp): Future[void]
+    MessageHandlerDecorator = proc(msgId: int, n: NimNode): NimNode
+    MessageHandler = proc(x: Peer, msgId: int, data: Rlp): Future[void]
     MessageContentPrinter = proc(msg: pointer): string
     RequestResolver = proc(msg: pointer, future: FutureBase)
     NextMsgResolver = proc(msgData: Rlp, future: FutureBase)
@@ -98,7 +106,7 @@ block:
     NetworkStateInitializer = proc(network: EthereumNode): RootRef
     HandshakeStep = proc(peer: Peer): Future[void]
     DisconnectionHandler = proc(peer: Peer,
-                                reason: DisconnectionReason): Future[void]
+                                reason: DisconnectionReason): Future[void] {.gcsafe.}
 
     RlpxMessageKind* = enum
       rlpxNotification,
@@ -133,9 +141,8 @@ block:
 
     MalformedMessageError* = object of Exception
 
-    UnexpectedDisconnectError* = object of Exception
+    PeerDisconnected* = object of Exception
       reason*: DisconnectionReason
 
     UselessPeerError* = object of Exception
-
 

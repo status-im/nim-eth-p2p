@@ -17,14 +17,15 @@ requires "nim > 0.18.0",
          "byteutils",
          "chronicles",
          "asyncdispatch2",
-         "eth_common"
+         "eth_common",
+         "package_visible_types"
 
-proc runTest(name: string, lang = "c") = exec "nim " & lang & " --experimental:ForLoopMacros -r tests/" & name
+proc runTest(name: string, lang = "c") =
+  exec "nim " & lang & " -d:testing --experimental:ForLoopMacros -r tests/" & name
 
 task test, "Runs the test suite":
-  runTest "testecies"
-  runTest "testauth"
-  runTest "testcrypt"
   runTest "testenode"
   runTest "tdiscovery"
   runTest "tserver"
+  runTest "all_tests"
+

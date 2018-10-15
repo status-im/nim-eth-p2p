@@ -1,3 +1,13 @@
+import
+  sets, options, random, hashes,
+  asyncdispatch2, chronicles, eth_common/eth_types,
+  private/types, rlpx, peer_pool, rlpx_protocols/eth_protocol,
+  ../eth_p2p.nim
+
+const
+  minPeersToStartSync* = 2 # Wait for consensus of at least this
+                           # number of peers before syncing
+
 type
   SyncStatus* = enum
     syncSuccess
@@ -25,6 +35,8 @@ type
     peerPool: PeerPool
     trustedPeers: HashSet[Peer]
     hasOutOfOrderBlocks: bool
+
+proc hash*(p: Peer): Hash {.inline.} = hash(cast[pointer](p))
 
 proc endIndex(b: WantedBlocks): BlockNumber =
   result = b.startIndex
@@ -228,6 +240,7 @@ proc randomTrustedPeer(ctx: SyncContext): Peer =
     inc i
 
 proc startSyncWithPeer(ctx: SyncContext, peer: Peer) {.async.} =
+  debug "start sync ", peer, trustedPeers = ctx.trustedPeers.len
   if ctx.trustedPeers.len >= minPeersToStartSync:
     # We have enough trusted peers. Validate new peer against trusted
     if await peersAgreeOnChain(peer, ctx.randomTrustedPeer()):
@@ -280,7 +293,7 @@ proc onPeerConnected(ctx: SyncContext, peer: Peer) =
       error "startSyncWithPeer failed", msg = f.readError.msg, peer
 
 proc onPeerDisconnected(ctx: SyncContext, p: Peer) =
-  echo "onPeerDisconnected"
+  debug "peer disconnected ", peer = p
   ctx.trustedPeers.excl(p)
 
 proc startSync(ctx: SyncContext) =

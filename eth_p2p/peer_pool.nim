@@ -1,12 +1,17 @@
 # PeerPool attempts to keep connections to at least min_peers
 # on the given network.
 
+import
+  os, tables, times, random,
+  asyncdispatch2, chronicles, rlp, eth_keys,
+  private/types, discovery, kademlia, rlpx
+
 const
   lookupInterval = 5
   connectLoopSleepMs = 2000
 
 proc newPeerPool*(network: EthereumNode,
-                  chainDb: AbstractChainDB, networkId: uint, keyPair: KeyPair,
+                  networkId: uint, keyPair: KeyPair,
                   discovery: DiscoveryProtocol, clientId: string,
                   listenPort = Port(30303), minPeers = 10): PeerPool =
   new result
@@ -72,7 +77,7 @@ proc connect(p: PeerPool, remote: Node): Future[Peer] {.async.} =
   # try:
   #   self.logger.debug("Connecting to %s...", remote)
   #   peer = await wait_with_token(
-  #     handshake(remote, self.privkey, self.peer_class, self.chaindb, self.network_id),
+  #     handshake(remote, self.privkey, self.peer_class, self.network_id),
   #     token=self.cancel_token,
   #     timeout=HANDSHAKE_TIMEOUT)
   #   return peer
@@ -97,40 +102,10 @@ proc lookupRandomNode(p: PeerPool) {.async.} =
 proc getRandomBootnode(p: PeerPool): seq[Node] =
   @[p.discovery.bootstrapNodes.rand()]
 
-proc peerFinished(p: PeerPool, peer: Peer) =
-  ## Remove the given peer from our list of connected nodes.
-  ## This is passed as a callback to be called when a peer finishes.
-  p.connectedNodes.del(peer.remote)
-
-  for o in p.observers.values:
-    if not o.onPeerDisconnected.isNil:
-      o.onPeerDisconnected(peer)
-
-proc run(peer: Peer, peerPool: PeerPool) {.async.} =
-  # TODO: This is a stub that should be implemented in rlpx.nim
-
-  try:
-    while true:
-      var (nextMsgId, nextMsgData) = await peer.recvMsg()
-      if nextMsgId == 1:
-        debug "Run got disconnect msg", reason = nextMsgData.listElem(0).toInt(uint32).DisconnectionReason, peer
-        break
-      else:
-        # debug "Got msg: ", msg = nextMsgId
-        await peer.dispatchMsg(nextMsgId, nextMsgData)
-  except:
-    error "Failed to read from peer",
-          err = getCurrentExceptionMsg(),
-          stackTrace = getCurrentException().getStackTrace()
-
-  peerPool.peerFinished(peer)
-
 proc connectToNode*(p: PeerPool, n: Node) {.async.} =
   let peer = await p.connect(n)
   if not peer.isNil:
     info "Connection established", peer
-    ensureFuture peer.run(p)
-
     p.connectedNodes[peer.remote] = peer
     for o in p.observers.values:
       if not o.onPeerConnected.isNil:

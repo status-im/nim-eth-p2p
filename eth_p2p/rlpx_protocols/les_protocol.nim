@@ -9,64 +9,26 @@
 #
 
 import
-  times,
-  chronicles, asyncdispatch2, rlp, eth_common/eth_types,
-  ../../eth_p2p
+  times, tables, options, sets, hashes, strutils, macros,
+  chronicles, asyncdispatch2, nimcrypto/[keccak, hash],
+  rlp, eth_common/eth_types, eth_keys,
+  ../rlpx, ../kademlia, ../private/types, ../blockchain_utils,
+  les/private/les_types, les/flow_control
 
-type
-  ProofRequest* = object
-    blockHash*: KeccakHash
-    accountKey*: Blob
-    key*: Blob
-    fromLevel*: uint
-
-  HeaderProofRequest* = object
-    chtNumber*: uint
-    blockNumber*: uint
-    fromLevel*: uint
-
-  ContractCodeRequest* = object
-    blockHash*: KeccakHash
-    key*: EthAddress
-
-  HelperTrieProofRequest* = object
-    subType*: uint
-    sectionIdx*: uint
-    key*: Blob
-    fromLevel*: uint
-    auxReq*: uint
-
-  TransactionStatus* = enum
-    Unknown,
-    Queued,
-    Pending,
-    Included,
-    Error
-
-  TransactionStatusMsg* = object
-    status*: TransactionStatus
-    data*: Blob
-
-  PeerState = object
-    buffer: int
-    lastRequestTime: float
-    reportedTotalDifficulty: DifficultyInt
-
-  KeyValuePair = object
-    key: string
-    value: Blob
+les_types.forwardPublicTypes
 
 const
+  lesVersion = 2'u
   maxHeadersFetch = 192
   maxBodiesFetch = 32
   maxReceiptsFetch = 128
   maxCodeFetch = 64
   maxProofsFetch = 64
   maxHeaderProofsFetch = 64
+  maxTransactionsFetch = 64
 
-# Handshake properties:
-# https://github.com/zsfelfoldi/go-ethereum/wiki/Light-Ethereum-Subprotocol-(LES)
-const
+  # Handshake properties:
+  # https://github.com/zsfelfoldi/go-ethereum/wiki/Light-Ethereum-Subprotocol-(LES)
   keyProtocolVersion = "protocolVersion"
     ## P: is 1 for the LPV1 protocol version.
 
@@ -110,98 +72,393 @@ const
     ## see Client Side Flow Control:
     ## https://github.com/zsfelfoldi/go-ethereum/wiki/Client-Side-Flow-Control-model-for-the-LES-protocol
 
-const
-  rechargeRate = 0.3
+  keyAnnounceType = "announceType"
+  keyAnnounceSignature = "sign"
 
-proc getPeerWithNewestChain(pool: PeerPool): Peer =
-  discard
+proc initProtocolState(network: LesNetwork, node: EthereumNode) =
+  network.peers = initSet[LesPeer]()
 
-rlpxProtocol les, 2:
+proc addPeer(network: LesNetwork, peer: LesPeer) =
+  network.enlistInFlowControl peer
+  network.peers.incl peer
 
-  type State = PeerState
+proc removePeer(network: LesNetwork, peer: LesPeer) =
+  network.delistFromFlowControl peer
+  network.peers.excl peer
+
+template costQuantity(quantityExpr: int, max: int) {.pragma.}
+
+proc getCostQuantity(fn: NimNode): tuple[quantityExpr, maxQuantity: NimNode] =
+  # XXX: `getCustomPragmaVal` doesn't work yet on regular nnkProcDef nodes
+  # (TODO: file as an issue)
+  let p = fn.pragma
+  assert p.kind == nnkPragma and p.len > 0 and $p[0][0] == "costQuantity"
+
+  result.quantityExpr = p[0][1]
+  result.maxQuantity= p[0][2]
+
+  if result.maxQuantity.kind == nnkExprEqExpr:
+    result.maxQuantity = result.maxQuantity[1]
+
+macro outgoingRequestDecorator(n: untyped): untyped =
+  result = n
+  let (costQuantity, maxQuantity) = n.getCostQuantity
+
+  result.body.add quote do:
+    trackOutgoingRequest(msgRecipient.networkState(les),
+                         msgRecipient.state(les),
+                         perProtocolMsgId, reqId, `costQuantity`)
+  # echo result.repr
+
+macro incomingResponseDecorator(n: untyped): untyped =
+  result = n
+
+  let trackingCall = quote do:
+    trackIncomingResponse(msgSender.state(les), reqId, msg.bufValue)
+
+  result.body.insert(n.body.len - 1, trackingCall)
+  # echo result.repr
+
+macro incomingRequestDecorator(n: untyped): untyped =
+  result = n
+  let (costQuantity, maxQuantity) = n.getCostQuantity
+
+  template acceptStep(quantityExpr, maxQuantity) {.dirty.} =
+    let requestCostQuantity = quantityExpr
+    if requestCostQuantity > maxQuantity:
+      await peer.disconnect(BreachOfProtocol)
+      return
+
+    let lesPeer = peer.state
+    let lesNetwork = peer.networkState
+
+    if not await acceptRequest(lesNetwork, lesPeer,
+                               perProtocolMsgId,
+                               requestCostQuantity): return
+
+  result.body.insert(1, getAst(acceptStep(costQuantity, maxQuantity)))
+  # echo result.repr
+
+template updateBV: BufValueInt =
+  bufValueAfterRequest(lesNetwork, lesPeer,
+                       perProtocolMsgId, requestCostQuantity)
+
+func getValue(values: openarray[KeyValuePair],
+              key: string, T: typedesc): Option[T] =
+  for v in values:
+    if v.key == key:
+      return some(rlp.decode(v.value, T))
+
+func getRequiredValue(values: openarray[KeyValuePair],
+                      key: string, T: typedesc): T =
+  for v in values:
+    if v.key == key:
+      return rlp.decode(v.value, T)
+
+  raise newException(HandshakeError,
+                     "Required handshake field " & key & " missing")
+
+rlpxProtocol les(version = lesVersion,
+                 peerState = LesPeer,
+                 networkState = LesNetwork,
+                 outgoingRequestDecorator = outgoingRequestDecorator,
+                 incomingRequestDecorator = incomingRequestDecorator,
+                 incomingResponseThunkDecorator = incomingResponseDecorator):
 
   ## Handshake
   ##
 
-  proc status(p: Peer, values: openarray[KeyValuePair]) =
-    discard
+  proc status(p: Peer, values: openarray[KeyValuePair])
+
+  onPeerConnected do (peer: Peer):
+    let
+      network = peer.network
+      chain = network.chain
+      bestBlock = chain.getBestBlockHeader
+      lesPeer = peer.state
+      lesNetwork = peer.networkState
+
+    template `=>`(k, v: untyped): untyped =
+      KeyValuePair.init(key = k, value = rlp.encode(v))
+
+    var lesProperties = @[
+      keyProtocolVersion      => lesVersion,
+      keyNetworkId            => network.networkId,
+      keyHeadTotalDifficulty  => bestBlock.difficulty,
+      keyHeadHash             => bestBlock.blockHash,
+      keyHeadNumber           => bestBlock.blockNumber,
+      keyGenesisHash          => chain.genesisHash
+    ]
+
+    lesPeer.remoteReqCosts = currentRequestsCosts(lesNetwork, les.protocolInfo)
+
+    if lesNetwork.areWeServingData:
+      lesProperties.add [
+        # keyServeHeaders       => nil,
+        keyServeChainSince      => 0,
+        keyServeStateSince      => 0,
+        # keyRelaysTransactions => nil,
+        keyFlowControlBL        => lesNetwork.bufferLimit,
+        keyFlowControlMRR       => lesNetwork.minRechargingRate,
+        keyFlowControlMRC       => lesPeer.remoteReqCosts
+      ]
+
+    if lesNetwork.areWeRequestingData:
+      lesProperties.add(keyAnnounceType => lesNetwork.ourAnnounceType)
+
+    let
+      s = await peer.nextMsg(les.status)
+      peerNetworkId   = s.values.getRequiredValue(keyNetworkId, uint)
+      peerGenesisHash = s.values.getRequiredValue(keyGenesisHash, KeccakHash)
+      peerLesVersion = s.values.getRequiredValue(keyProtocolVersion, uint)
+
+    template requireCompatibility(peerVar, localVar, varName: untyped) =
+      if localVar != peerVar:
+        raise newException(HandshakeError,
+                           "Incompatibility detected! $1 mismatch ($2 != $3)" %
+                           [varName, $localVar, $peerVar])
+
+    requireCompatibility(peerLesVersion,  lesVersion,        "les version")
+    requireCompatibility(peerNetworkId,   network.networkId, "network id")
+    requireCompatibility(peerGenesisHash, chain.genesisHash, "genesis hash")
+
+    template `:=`(lhs, key) =
+      lhs = s.values.getRequiredValue(key, type(lhs))
+
+    lesPeer.bestBlockHash := keyHeadHash
+    lesPeer.bestBlockNumber := keyHeadNumber
+    lesPeer.bestDifficulty := keyHeadTotalDifficulty
+
+    let peerAnnounceType = s.values.getValue(keyAnnounceType, AnnounceType)
+    if peerAnnounceType.isSome:
+      lesPeer.isClient = true
+      lesPeer.announceType = peerAnnounceType.get
+    else:
+      lesPeer.announceType = AnnounceType.Simple
+      lesPeer.hasChainSince := keyServeChainSince
+      lesPeer.hasStateSince := keyServeStateSince
+      lesPeer.relaysTransactions := keyRelaysTransactions
+      lesPeer.localFlowState.bufLimit := keyFlowControlBL
+      lesPeer.localFlowState.minRecharge := keyFlowControlMRR
+      lesPeer.localReqCosts := keyFlowControlMRC
+
+    lesNetwork.addPeer lesPeer
+
+  onPeerDisconnected do (peer: Peer, reason: DisconnectionReason) {.gcsafe.}:
+    peer.networkState.removePeer peer.state
 
   ## Header synchronisation
   ##
 
-  proc announce(p: Peer,
-                headHash: KeccakHash,
-                headNumber: BlockNumber,
-                headTotalDifficulty: DifficultyInt,
-                reorgDepth: BlockNumber,
-                values: openarray[KeyValuePair],
-                announceType: uint) =
-    discard
+  proc announce(
+       peer: Peer,
+       headHash: KeccakHash,
+       headNumber: BlockNumber,
+       headTotalDifficulty: DifficultyInt,
+       reorgDepth: BlockNumber,
+       values: openarray[KeyValuePair],
+       announceType: AnnounceType) =
+
+    if peer.state.announceType == AnnounceType.None:
+      error "unexpected announce message", peer
+      return
+
+    if announceType == AnnounceType.Signed:
+      let signature = values.getValue(keyAnnounceSignature, Blob)
+      if signature.isNone:
+        error "missing announce signature"
+        return
+      let sigHash = keccak256.digest rlp.encodeList(headHash,
+                                                    headNumber,
+                                                    headTotalDifficulty)
+      let signerKey = recoverKeyFromSignature(signature.get.initSignature,
+                                              sigHash)
+      if signerKey.toNodeId != peer.remote.id:
+        error "invalid announce signature"
+        # TODO: should we disconnect this peer?
+        return
+
+    # TODO: handle new block
 
   requestResponse:
-    proc getBlockHeaders(p: Peer, BV: uint, req: BlocksRequest) =
-      discard
+    proc getBlockHeaders(
+           peer: Peer,
+           req: BlocksRequest) {.
+           costQuantity(req.maxResults.int, max = maxHeadersFetch).} =
 
-    proc blockHeaders(p: Peer, BV: uint, blocks: openarray[BlockHeader]) =
-      discard
+      let headers = peer.network.chain.getBlockHeaders(req)
+      await peer.blockHeaders(reqId, updateBV(), headers)
+
+    proc blockHeaders(
+           peer: Peer,
+           bufValue: BufValueInt,
+           blocks: openarray[BlockHeader])
 
   ## On-damand data retrieval
   ##
 
   requestResponse:
-    proc getBlockBodies(p: Peer, blocks: openarray[KeccakHash]) =
-      discard
+    proc getBlockBodies(
+           peer: Peer,
+           blocks: openarray[KeccakHash]) {.
+           costQuantity(blocks.len, max = maxBodiesFetch).} =
 
-    proc blockBodies(p: Peer, BV: uint, bodies: openarray[BlockBody]) =
-      discard
+      let blocks = peer.network.chain.getBlockBodies(blocks)
+      await peer.blockBodies(reqId, updateBV(), blocks)
 
-  requestResponse:
-    proc getReceipts(p: Peer, hashes: openarray[KeccakHash]) =
-      discard
-
-    proc receipts(p: Peer, BV: uint, receipts: openarray[Receipt]) =
-      discard
-
-  requestResponse:
-    proc getProofs(p: Peer, proofs: openarray[ProofRequest]) =
-      discard
-
-    proc proofs(p: Peer, BV: uint, proofs: openarray[Blob]) =
-      discard
+    proc blockBodies(
+           peer: Peer,
+           bufValue: BufValueInt,
+           bodies: openarray[BlockBody])
 
   requestResponse:
-    proc getContractCodes(p: Peer, requests: seq[ContractCodeRequest]) =
-      discard
+    proc getReceipts(
+           peer: Peer,
+           hashes: openarray[KeccakHash])
+           {.costQuantity(hashes.len, max = maxReceiptsFetch).} =
 
-    proc contractCodes(p: Peer, BV: uint, results: seq[Blob]) =
-      discard
+      let receipts = peer.network.chain.getReceipts(hashes)
+      await peer.receipts(reqId, updateBV(), receipts)
+
+    proc receipts(
+           peer: Peer,
+           bufValue: BufValueInt,
+           receipts: openarray[Receipt])
+
+  requestResponse:
+    proc getProofs(
+           peer: Peer,
+           proofs: openarray[ProofRequest]) {.
+           costQuantity(proofs.len, max = maxProofsFetch).} =
+
+      let proofs = peer.network.chain.getProofs(proofs)
+      await peer.proofs(reqId, updateBV(), proofs)
+
+    proc proofs(
+           peer: Peer,
+           bufValue: BufValueInt,
+           proofs: openarray[Blob])
+
+  requestResponse:
+    proc getContractCodes(
+           peer: Peer,
+           reqs: seq[ContractCodeRequest]) {.
+           costQuantity(reqs.len, max = maxCodeFetch).} =
+
+      let results = peer.network.chain.getContractCodes(reqs)
+      await peer.contractCodes(reqId, updateBV(), results)
+
+    proc contractCodes(
+           peer: Peer,
+           bufValue: BufValueInt,
+           results: seq[Blob])
 
   nextID 15
 
   requestResponse:
-    proc getHeaderProofs(p: Peer, requests: openarray[ProofRequest]) =
-      discard
+    proc getHeaderProofs(
+           peer: Peer,
+           reqs: openarray[ProofRequest]) {.
+           costQuantity(reqs.len, max = maxHeaderProofsFetch).} =
 
-    proc headerProof(p: Peer, BV: uint, proofs: openarray[Blob]) =
-      discard
+      let proofs = peer.network.chain.getHeaderProofs(reqs)
+      await peer.headerProofs(reqId, updateBV(), proofs)
+
+    proc headerProofs(
+           peer: Peer,
+           bufValue: BufValueInt,
+           proofs: openarray[Blob])
 
   requestResponse:
-    proc getHelperTrieProofs(p: Peer, requests: openarray[HelperTrieProofRequest]) =
-      discard
+    proc getHelperTrieProofs(
+           peer: Peer,
+           reqs: openarray[HelperTrieProofRequest]) {.
+           costQuantity(reqs.len, max = maxProofsFetch).} =
 
-    proc helperTrieProof(p: Peer, BV: uint, nodes: seq[Blob], auxData: seq[Blob]) =
-      discard
+      var nodes, auxData: seq[Blob]
+      peer.network.chain.getHelperTrieProofs(reqs, nodes, auxData)
+      await peer.helperTrieProofs(reqId, updateBV(), nodes, auxData)
+
+    proc helperTrieProofs(
+           peer: Peer,
+           bufValue: BufValueInt,
+           nodes: seq[Blob],
+           auxData: seq[Blob])
 
   ## Transaction relaying and status retrieval
   ##
 
   requestResponse:
-    proc sendTxV2(p: Peer, transactions: openarray[Transaction]) =
-      discard
+    proc sendTxV2(
+           peer: Peer,
+           transactions: openarray[Transaction]) {.
+           costQuantity(transactions.len, max = maxTransactionsFetch).} =
 
-    proc getTxStatus(p: Peer, transactions: openarray[Transaction]) =
-      discard
+      let chain = peer.network.chain
 
-    proc txStatus(p: Peer, BV: uint, transactions: openarray[TransactionStatusMsg]) =
-      discard
+      var results: seq[TransactionStatusMsg]
+      for t in transactions:
+        let hash = t.rlpHash # TODO: this is not optimal, we can compute
+                             # the hash from the request bytes.
+                             # The RLP module can offer a helper Hashed[T]
+                             # to make this easy.
+        var s = chain.getTransactionStatus(hash)
+        if s.status == TransactionStatus.Unknown:
+          chain.addTransactions([t])
+          s = chain.getTransactionStatus(hash)
+
+        results.add s
+
+      await peer.txStatus(reqId, updateBV(), results)
+
+    proc getTxStatus(
+           peer: Peer,
+           transactions: openarray[Transaction]) {.
+           costQuantity(transactions.len, max = maxTransactionsFetch).} =
+
+      let chain = peer.network.chain
+
+      var results: seq[TransactionStatusMsg]
+      for t in transactions:
+        results.add chain.getTransactionStatus(t.rlpHash)
+      await peer.txStatus(reqId, updateBV(), results)
+
+    proc txStatus(
+           peer: Peer,
+           bufValue: BufValueInt,
+           transactions: openarray[TransactionStatusMsg])
+
+proc configureLes*(node: EthereumNode,
+                   # Client options:
+                   announceType = AnnounceType.Simple,
+                   # Server options.
+                   # The zero default values indicate that the
+                   # LES server will be deactivated.
+                   maxReqCount = 0,
+                   maxReqCostSum = 0,
+                   reqCostTarget = 0) =
+
+  doAssert announceType != AnnounceType.Unspecified or maxReqCount > 0
+
+  var lesNetwork = node.protocolState(les)
+  lesNetwork.ourAnnounceType = announceType
+  initFlowControl(lesNetwork, les.protocolInfo,
+                  maxReqCount, maxReqCostSum, reqCostTarget,
+                  node.chain)
+
+proc configureLesServer*(node: EthereumNode,
+                         # Client options:
+                         announceType = AnnounceType.Unspecified,
+                         # Server options.
+                         # The zero default values indicate that the
+                         # LES server will be deactivated.
+                         maxReqCount = 0,
+                         maxReqCostSum = 0,
+                         reqCostTarget = 0) =
+  ## This is similar to `configureLes`, but with default parameter
+  ## values appropriate for a server.
+  node.configureLes(announceType, maxReqCount, maxReqCostSum, reqCostTarget)
+
+proc persistLesMessageStats*(node: EthereumNode) =
+  persistMessageStats(node.chain, node.protocolState(les))
 
