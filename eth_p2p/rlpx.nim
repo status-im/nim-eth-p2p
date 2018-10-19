@@ -480,7 +480,7 @@ proc dispatchMessages*(peer: Peer) {.async.} =
     try:
       await peer.invokeThunk(msgId, msgData)
     except RlpError:
-      error "endind dispatchMessages loop", peer, err = getCurrentExceptionMsg()
+      error "ending dispatchMessages loop", peer = peer, err = getCurrentExceptionMsg()
       await peer.disconnect(BreachOfProtocol)
       return
 
