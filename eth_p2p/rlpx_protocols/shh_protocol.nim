@@ -7,21 +7,8 @@
 ## or long-lived messages must spend more work.
 
 import
-  algorithm,
-  bitops,
-  endians,
-  math,
-  options,
-  sequtils,
-  strutils,
-  tables,
-  times,
-  secp256k1,
-  chronicles,
-  asyncdispatch2,
-  eth_common/eth_types,
-  eth_keys,
-  rlp,
+  algorithm, bitops, endians, math, options, sequtils, strutils, tables, times,
+  secp256k1, chronicles, asyncdispatch2, eth_common/eth_types, eth_keys, rlp,
   nimcrypto/[bcmode, hash, keccak, rijndael],
   ../../eth_p2p, ../ecies
 
@@ -257,9 +244,11 @@ proc encode*(self: Payload): Option[Bytes] =
 
 proc decode*(data: openarray[byte], dst = none[PrivateKey](),
     symKey = none[SymKey]()): Option[DecodedPayload] =
-  ## Decode data into payload, using keys found in self
+  ## Decode data into payload, potentially trying to decrypt if keys are
+  ## provided
 
-  # Careful throughout - data coming from unknown source
+  # Careful throughout - data coming from unknown source - malformatted data
+  # expected
 
   var res: DecodedPayload
 
@@ -431,7 +420,7 @@ proc add*(self: var Queue, msg: Message) =
 
   self.items.insert(msg, self.items.lowerBound(msg, cmpPow))
 
-rlpxProtocol shh, whisperVersion:
+rlpxProtocol shh(version = whisperVersion):
   proc status(peer: Peer,
               protocolVersion: uint,
               powCoverted: uint,
