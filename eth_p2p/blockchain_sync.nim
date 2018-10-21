@@ -288,7 +288,7 @@ proc onPeerConnected(ctx: SyncContext, peer: Peer) =
   debug "New candidate for sync", peer
   discard
   let f = ctx.startSyncWithPeer(peer)
-  f.callback = proc(data: pointer) =
+  f.callback = proc(data: pointer) {.gcsafe.} =
     if f.failed:
       error "startSyncWithPeer failed", msg = f.readError.msg, peer
 
