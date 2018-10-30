@@ -11,7 +11,7 @@ import
   sequtils, options, unittest,
   nimcrypto/hash,
   eth_keys, rlp,
-  eth_p2p/rlpx_protocols/shh
+  eth_p2p/rlpx_protocols/shh_protocol as shh
 
 suite "Whisper payload":
   test "should roundtrip without keys":
