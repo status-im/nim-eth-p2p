@@ -89,10 +89,13 @@ template asyncTest(name, body: untyped) =
     proc scenario {.async.} = body
     waitFor scenario()
 
+import typetraits
+
 asyncTest "network with 3 peers using custom protocols":
+  const usecompression = defined(useSnappy)
   let localKeys = newKeyPair()
   let localAddress = localAddress(30303)
-  var localNode = newEthereumNode(localKeys, localAddress, 1, nil)
+  var localNode = newEthereumNode(localKeys, localAddress, 1, nil, useSnappyCompression = useCompression)
   localNode.initProtocolStates()
   localNode.startListening()
 
@@ -130,4 +133,3 @@ asyncTest "network with 3 peers using custom protocols":
     abcNetState.peers.len == 2
     "Alice" in abcNetState.peers
     "John Doe" in abcNetState.peers
-
