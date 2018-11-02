@@ -34,7 +34,8 @@ proc newEthereumNode*(keys: KeyPair,
                       networkId: uint,
                       chain: AbstractChainDB,
                       clientId = "nim-eth-p2p/0.2.0", # TODO: read this value from nimble somehow
-                      addAllCapabilities = true): EthereumNode =
+                      addAllCapabilities = true,
+                      useSnappyCompression: bool = false): EthereumNode =
   new result
   result.keys = keys
   result.networkId = networkId
@@ -43,6 +44,12 @@ proc newEthereumNode*(keys: KeyPair,
   result.rlpxCapabilities.newSeq 0
   result.address = address
   result.connectionState = ConnectionState.None
+
+  when defined(useSnappy):
+    if useSnappyCompression:
+      result.protocolVersion = devp2pSnappyVersion
+    else:
+      result.protocolVersion = devp2pVersion
 
   if addAllCapabilities:
     for p in rlpxProtocols:
@@ -141,4 +148,3 @@ proc randomPeer*(node: EthereumNode): Peer =
   for peer in node.peers:
     if i == peerIdx: return peer
     inc i
-

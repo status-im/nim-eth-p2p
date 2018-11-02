@@ -19,6 +19,8 @@ packageTypes:
       protocolStates: seq[RootRef]
       discovery: DiscoveryProtocol
       peerPool*: PeerPool
+      when defined(useSnappy):
+        protocolVersion: uint
 
     Peer* = ref object
       transport: StreamTransport
@@ -31,6 +33,8 @@ packageTypes:
       protocolStates: seq[RootRef]
       outstandingRequests: seq[Deque[OutstandingRequest]]
       awaitedMessages: seq[FutureBase]
+      when defined(useSnappy):
+        snappyEnabled: bool
 
     OutstandingRequest = object
       id: int
