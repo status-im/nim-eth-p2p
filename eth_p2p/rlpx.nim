@@ -423,15 +423,12 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   decryptedBytes.setLen(decryptedBytesCount)
 
   when defined(useSnappy):
-    var rlp: Rlp
     if peer.network.protocolVersion == devp2pSnappyVersion:
       decryptedBytes = snappy.uncompress(decryptedBytes)
       if decryptedBytes.len == 0:
         await peer.disconnectAndRaise(BreachOfProtocol,
                                   "Snappy uncompress encountered malformed data")
-    rlp = rlpFromBytes(decryptedBytes.toRange)
-  else:
-    var rlp = rlpFromBytes(decryptedBytes.toRange)
+  var rlp = rlpFromBytes(decryptedBytes.toRange)
 
   try:
     let msgid = rlp.read(int)
