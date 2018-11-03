@@ -19,7 +19,7 @@ requires "nim > 0.18.0",
          "asyncdispatch2",
          "eth_common",
          "package_visible_types",
-         "https://github.com/jangko/snappy"
+         "snappy"
 
 proc runTest(name: string, defs = "", lang = "c") =
   exec "nim " & lang & " " & defs & " -d:testing --experimental:ForLoopMacros -r tests/" & name
