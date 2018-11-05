@@ -4,6 +4,8 @@ import
   rlp, asyncdispatch2, eth_common/eth_types, eth_keys,
   ../enode, ../kademlia, ../discovery, ../options, ../rlpxcrypt
 
+const useSnappy* = defined(useSnappy)
+
 packageTypes:
   type
     EthereumNode* = ref object
@@ -19,7 +21,7 @@ packageTypes:
       protocolStates: seq[RootRef]
       discovery: DiscoveryProtocol
       peerPool*: PeerPool
-      when defined(useSnappy):
+      when useSnappy:
         protocolVersion: uint
 
     Peer* = ref object
@@ -33,7 +35,7 @@ packageTypes:
       protocolStates: seq[RootRef]
       outstandingRequests: seq[Deque[OutstandingRequest]]
       awaitedMessages: seq[FutureBase]
-      when defined(useSnappy):
+      when useSnappy:
         snappyEnabled: bool
 
     OutstandingRequest = object

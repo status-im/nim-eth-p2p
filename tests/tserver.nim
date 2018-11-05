@@ -89,8 +89,6 @@ template asyncTest(name, body: untyped) =
     proc scenario {.async.} = body
     waitFor scenario()
 
-import typetraits
-
 asyncTest "network with 3 peers using custom protocols":
   const usecompression = defined(useSnappy)
   let localKeys = newKeyPair()

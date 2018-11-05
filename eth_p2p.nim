@@ -45,7 +45,7 @@ proc newEthereumNode*(keys: KeyPair,
   result.address = address
   result.connectionState = ConnectionState.None
 
-  when defined(useSnappy):
+  when useSnappy:
     if useSnappyCompression:
       result.protocolVersion = devp2pSnappyVersion
     else:
