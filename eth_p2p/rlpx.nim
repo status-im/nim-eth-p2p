@@ -3,7 +3,7 @@ import
   chronicles, nimcrypto, asyncdispatch2, rlp, eth_common, eth_keys,
   private/types, kademlia, auth, rlpxcrypt, enode
 
-when defined(useSnappy):
+when useSnappy:
   import snappy
   const
     devp2pSnappyVersion* = 5
@@ -259,18 +259,17 @@ proc linkSendFailureToReqFuture[S, R](sendFut: Future[S], resFut: Future[R]) =
     if not sendFut.error.isNil:
       resFut.fail(sendFut.error)
 
+template compressMsg(peer: Peer, data: Bytes): Bytes =
+  when useSnappy:
+    if peer.snappyEnabled: snappy.compress(data)
+    else: data
+  else:
+    data
+
 proc sendMsg*(peer: Peer, data: Bytes) {.async.} =
   trace "sending msg", peer, msg = getMsgName(peer, rlpFromBytes(data).read(int))
 
-  when defined(useSnappy):
-    var cipherText: Bytes
-    if peer.snappyEnabled:
-      let compressed = snappy.compress(data)
-      cipherText = encryptMsg(compressed, peer.secretsState)
-    else:
-      cipherText = encryptMsg(data, peer.secretsState)
-  else:
-    var cipherText = encryptMsg(data, peer.secretsState)
+  var cipherText = encryptMsg(peer.compressMsg(data), peer.secretsState)
 
   try:
     discard await peer.transport.write(cipherText)
@@ -422,7 +421,7 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
 
   decryptedBytes.setLen(decryptedBytesCount)
 
-  when defined(useSnappy):
+  when useSnappy:
     if peer.network.protocolVersion == devp2pSnappyVersion:
       decryptedBytes = snappy.uncompress(decryptedBytes)
       if decryptedBytes.len == 0:
@@ -1184,6 +1183,29 @@ proc initSecretState(hs: var Handshake, authMsg, ackMsg: openarray[byte],
   initSecretState(secrets, p.secretsState)
   burnMem(secrets)
 
+template baseProtocolVersion(node: EthereumNode): untyped =
+  when useSnappy:
+    node.protocolVersion
+  else:
+    devp2pVersion
+
+template checkPeerCap(peer: Peer, handshake: HandShake) =
+  when useSnappy:
+    peer.snappyEnabled = handshake.version >= devp2pSnappyVersion.uint
+
+template getVersion(handshake: HandShake): uint =
+  when useSnappy:
+    handshake.version
+  else:
+    devp2pVersion
+
+template baseProtocolVersion(peer: Peer): uint =
+  when useSnappy:
+    if result.snappyEnabled: devp2pSnappyVersion
+    else: devp2pVersion
+  else:
+    devp2pVersion
+
 proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
   new result
   result.network = node
@@ -1194,11 +1216,7 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
   try:
     result.transport = await connect(ta)
 
-    when defined(useSnappy):
-      var handshake = newHandshake({Initiator, EIP8}, int(node.protocolVersion))
-    else:
-      var handshake = newHandshake({Initiator, EIP8})
-
+    var handshake = newHandshake({Initiator, EIP8}, int(node.baseProtocolVersion()))
     handshake.host = node.keys
 
     var authMsg: array[AuthMessageMaxEIP8, byte]
@@ -1220,26 +1238,16 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
       ret = handshake.decodeAckMessage(ackMsg)
     check ret
 
-    when defined(useSnappy):
-      result.snappyEnabled = handshake.version.int >= devp2pSnappyVersion
-
+    result.checkPeerCap(handshake)
     initSecretState(handshake, ^authMsg, ackMsg, result)
 
     # if handshake.remoteHPubkey != remote.node.pubKey:
     #   raise newException(Exception, "Remote pubkey is wrong")
-    when defined(useSnappy):
-      asyncCheck result.hello(handshake.version,
-                              node.clientId,
-                              node.rlpxCapabilities,
-                              uint(node.address.tcpPort),
-                              node.keys.pubkey.getRaw())
-
-    else:
-      asyncCheck result.hello(devp2pVersion,
-                              node.clientId,
-                              node.rlpxCapabilities,
-                              uint(node.address.tcpPort),
-                              node.keys.pubkey.getRaw())
+    asyncCheck result.hello(handshake.getVersion(),
+                            node.clientId,
+                            node.rlpxCapabilities,
+                            uint(node.address.tcpPort),
+                            node.keys.pubkey.getRaw())
 
     var response = await result.waitSingleMsg(p2p.hello)
 
@@ -1292,9 +1300,8 @@ proc rlpxAccept*(node: EthereumNode,
       ret = handshake.decodeAuthMessage(authMsg)
     check ret
 
-    when defined(useSnappy):
-      result.snappyEnabled = handshake.version >= devp2pSnappyVersion.uint
-      handshake.version = uint8(node.protocolVersion)
+    result.checkPeerCap(handshake)
+    handshake.version = uint8(node.baseProtocolVersion())
 
     var ackMsg: array[AckMessageMaxEIP8, byte]
     var ackMsgLen: int
@@ -1305,17 +1312,9 @@ proc rlpxAccept*(node: EthereumNode,
 
     let listenPort = transport.localAddress().port
 
-    when defined(useSnappy):
-      let peerProtocolVersion = if result.snappyEnabled: devp2pSnappyVersion.uint
-        else: devp2pVersion.uint
-
-      await result.hello(peerProtocolVersion, node.clientId,
-                        node.rlpxCapabilities, listenPort.uint,
-                        node.keys.pubkey.getRaw())
-    else:
-      await result.hello(devp2pVersion, node.clientId,
-                        node.rlpxCapabilities, listenPort.uint,
-                        node.keys.pubkey.getRaw())
+    await result.hello(result.baseProtocolVersion(), node.clientId,
+                       node.rlpxCapabilities, listenPort.uint,
+                       node.keys.pubkey.getRaw())
 
     var response = await result.waitSingleMsg(p2p.hello)
     if not validatePubKeyInHello(response, handshake.remoteHPubkey):
