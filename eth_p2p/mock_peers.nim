@@ -28,6 +28,8 @@ type
 
     expectedMsgs: Deque[ExpectedMsg]
     receivedMsgsCount: int
+    when useSnappy:
+      useCompression*: bool
 
 var
   nextUnusedMockPort = 40304
@@ -152,6 +154,12 @@ macro expect*(mock: MockConf, MsgType: type, handler: untyped = nil): untyped =
     newCall(bindSym"makeProtoMsgPair", MsgType.getType),
     newCall(bindSym"toAction", handler))
 
+template compression(m: MockConf): bool =
+  when useSnappy:
+    m.useCompression
+  else:
+    false
+
 proc newMockPeer*(userConfigurator: proc (m: MockConf)): EthereumNode =
   var mockConf = new MockConf
   mockConf.keys = newKeyPair()
@@ -169,7 +177,8 @@ proc newMockPeer*(userConfigurator: proc (m: MockConf)): EthereumNode =
                              mockConf.networkId,
                              mockConf.chain,
                              mockConf.clientId,
-                             addAllCapabilities = false)
+                             addAllCapabilities = false,
+                             mockConf.compression())
 
   mockConf.handshakes.sort do (lhs, rhs: ExpectedMsg) -> int:
     # this is intentially sorted in reverse order, so we
