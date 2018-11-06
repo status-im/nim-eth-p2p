@@ -90,10 +90,10 @@ template asyncTest(name, body: untyped) =
     waitFor scenario()
 
 asyncTest "network with 3 peers using custom protocols":
-  const usecompression = defined(useSnappy)
+  const useCompression = defined(useSnappy)
   let localKeys = newKeyPair()
   let localAddress = localAddress(30303)
-  var localNode = newEthereumNode(localKeys, localAddress, 1, nil, useSnappyCompression = useCompression)
+  var localNode = newEthereumNode(localKeys, localAddress, 1, nil, useCompression = useCompression)
   localNode.initProtocolStates()
   localNode.startListening()
 
@@ -118,6 +118,9 @@ asyncTest "network with 3 peers using custom protocols":
     m.expect(xyz.xyzReq) do (peer: Peer):
       echo "got xyz req"
       await peer.xyzRes("mock peer data")
+
+    when useCompression:
+      m.useCompression = useCompression
 
   discard await mock1.rlpxConnect(localNode)
   let mock2Connection = await localNode.rlpxConnect(mock2)

@@ -35,7 +35,7 @@ proc newEthereumNode*(keys: KeyPair,
                       chain: AbstractChainDB,
                       clientId = "nim-eth-p2p/0.2.0", # TODO: read this value from nimble somehow
                       addAllCapabilities = true,
-                      useSnappyCompression: bool = false): EthereumNode =
+                      useCompression: bool = false): EthereumNode =
   new result
   result.keys = keys
   result.networkId = networkId
@@ -46,7 +46,7 @@ proc newEthereumNode*(keys: KeyPair,
   result.connectionState = ConnectionState.None
 
   when useSnappy:
-    if useSnappyCompression:
+    if useCompression:
       result.protocolVersion = devp2pSnappyVersion
     else:
       result.protocolVersion = devp2pVersion
