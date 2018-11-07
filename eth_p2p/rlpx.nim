@@ -261,8 +261,7 @@ proc linkSendFailureToReqFuture[S, R](sendFut: Future[S], resFut: Future[R]) =
 
 template compressMsg(peer: Peer, data: Bytes): Bytes =
   when useSnappy:
-    if peer.snappyEnabled and
-      peer.network.protocolVersion == devp2pSnappyVersion:
+    if peer.snappyEnabled:
       snappy.compress(data)
     else: data
   else:
@@ -424,8 +423,7 @@ proc recvMsg*(peer: Peer): Future[tuple[msgId: int, msgData: Rlp]] {.async.} =
   decryptedBytes.setLen(decryptedBytesCount)
 
   when useSnappy:
-    if peer.network.protocolVersion == devp2pSnappyVersion and
-      peer.snappyEnabled:
+    if peer.snappyEnabled:
       decryptedBytes = snappy.uncompress(decryptedBytes)
       if decryptedBytes.len == 0:
         await peer.disconnectAndRaise(BreachOfProtocol,
@@ -1199,11 +1197,11 @@ template baseProtocolVersion(node: EthereumNode, peer: Peer): untyped =
   else:
     devp2pVersion
 
-template checkPeerProtocolVersion(peer: Peer, handshake: HandShake) =
+template checkPeerProtocolVersion(peer: Peer, handshake: Handshake) =
   when useSnappy:
     peer.snappyEnabled = handshake.version >= devp2pSnappyVersion.uint
 
-template getVersion(handshake: HandShake): uint =
+template getVersion(handshake: Handshake): uint =
   when useSnappy:
     handshake.version
   else:
@@ -1215,6 +1213,11 @@ template baseProtocolVersion(peer: Peer): uint =
     else: devp2pVersion
   else:
     devp2pVersion
+
+template checkPeerNeedCompression(peer: Peer, node: EthereumNode) =
+  when useSnappy:
+    peer.snappyEnabled = peer.snappyEnabled and
+      node.protocolVersion >= devp2pSnappyVersion.uint
 
 proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
   new result
@@ -1264,6 +1267,7 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
       warn "Remote nodeId is not its public key" # XXX: Do we care?
 
     await postHelloSteps(result, response)
+    result.checkPeerNeedCompression(node)
     ok = true
   except PeerDisconnected as e:
     if e.reason != TooManyPeers:
@@ -1335,6 +1339,7 @@ proc rlpxAccept*(node: EthereumNode,
     result.remote = newNode(initEnode(handshake.remoteHPubkey, address))
 
     await postHelloSteps(result, response)
+    result.checkPeerNeedCompression(node)
   except:
     error "Exception in rlpxAccept",
           err = getCurrentExceptionMsg(),
