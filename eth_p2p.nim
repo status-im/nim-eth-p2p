@@ -46,10 +46,8 @@ proc newEthereumNode*(keys: KeyPair,
   result.connectionState = ConnectionState.None
 
   when useSnappy:
-    if useCompression:
-      result.protocolVersion = devp2pSnappyVersion
-    else:
-      result.protocolVersion = devp2pVersion
+    result.protocolVersion = if useCompression: devp2pSnappyVersion
+                             else: devp2pVersion
 
   if addAllCapabilities:
     for p in rlpxProtocols:
