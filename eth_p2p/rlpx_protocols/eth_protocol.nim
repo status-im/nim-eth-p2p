@@ -21,8 +21,8 @@ type
     number: uint
 
   NewBlockAnnounce* = object
-    header: BlockHeader
-    body {.rlpInline.}: BlockBody
+    header*: BlockHeader
+    body* {.rlpInline.}: BlockBody
 
   PeerState = ref object
     initialized*: bool

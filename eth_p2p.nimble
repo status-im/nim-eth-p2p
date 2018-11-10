@@ -18,8 +18,10 @@ requires "nim > 0.18.0",
          "chronicles",
          "asyncdispatch2",
          "eth_common",
+         "snappy",
          "package_visible_types",
-         "snappy"
+         "serialization",
+         "json_serialization"
 
 proc runTest(name: string, defs = "", lang = "c") =
   exec "nim " & lang & " " & defs & " -d:testing --experimental:ForLoopMacros -r tests/" & name

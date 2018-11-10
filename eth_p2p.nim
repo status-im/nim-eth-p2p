@@ -15,10 +15,8 @@ import
   eth_p2p/[kademlia, discovery, enode, peer_pool, rlpx],
   eth_p2p/private/types
 
-types.forwardPublicTypes
-
 export
-  rlpx, enode, kademlia
+  types, rlpx, enode, kademlia
 
 proc addCapability*(n: var EthereumNode, p: ProtocolInfo) =
   assert n.connectionState == ConnectionState.None
