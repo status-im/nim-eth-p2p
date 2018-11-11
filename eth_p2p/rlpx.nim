@@ -1142,15 +1142,6 @@ proc validatePubKeyInHello(msg: p2p.hello, pubKey: PublicKey): bool =
   var pk: PublicKey
   recoverPublicKey(msg.nodeId, pk) == EthKeysStatus.Success and pk == pubKey
 
-proc performSubProtocolHandshakes(peer: Peer) {.async.} =
-  var subProtocolsHandshakes = newSeqOfCap[Future[void]](rlpxProtocols.len)
-  for protocol in peer.dispatcher.activeProtocols:
-    if protocol.handshake != nil:
-      subProtocolsHandshakes.add((protocol.handshake)(peer))
-
-  await all(subProtocolsHandshakes)
-  peer.connectionState = Connected
-
 proc checkUselessPeer(peer: Peer) {.inline.} =
   if peer.dispatcher.numProtocols == 0:
     # XXX: Send disconnect + UselessPeer
@@ -1181,16 +1172,37 @@ proc initPeerState*(peer: Peer, capabilities: openarray[Capability]) =
     if peerStateInit != nil:
       peer.protocolStates[protocol.index] = peerStateInit(peer)
 
-proc postHelloSteps(peer: Peer, h: p2p.hello): Future[void] =
+proc postHelloSteps(peer: Peer, h: p2p.hello) {.async.} =
   initPeerState(peer, h.capabilities)
 
+  # Please note that the ordering of operations here is important!
+  #
+  # We must first start all handshake procedures and give them a
+  # chance to send any initial packages they might require over
+  # the network and to yield on their `nextMsg` waits.
+  #
+  var subProtocolsHandshakes = newSeqOfCap[Future[void]](rlpxProtocols.len)
+  for protocol in peer.dispatcher.activeProtocols:
+    if protocol.handshake != nil:
+      subProtocolsHandshakes.add((protocol.handshake)(peer))
+
+  # The `dispatchMesssages` loop must be started after this.
+  # Otherwise, we risk that some of the handshake packets sent by
+  # the other peer may arrrive too early and be processed before
+  # the handshake code got a change to wait for them.
+  #
   var messageProcessingLoop = peer.dispatchMessages()
 
   messageProcessingLoop.callback = proc(p: pointer) {.gcsafe.} =
     if messageProcessingLoop.failed:
       asyncCheck peer.disconnect(ClientQuitting)
 
-  return performSubProtocolHandshakes(peer)
+  # The handshake may involve multiple async steps, so we wait
+  # here for all of them to finish.
+  #
+  await all(subProtocolsHandshakes)
+
+  peer.connectionState = Connected
 
 template `^`(arr): auto =
   # passes a stack array with a matching `arrLen`
