@@ -58,10 +58,15 @@ proc processIncoming(server: StreamServer,
   yield peerfut
   if not peerfut.failed:
     let peer = peerfut.read()
-    echo "TODO: Add peer to the pool..."
+    if peer.remote notin node.peerPool.connectedNodes:
+      node.peerPool.connectedNodes[peer.remote] = peer
+      for o in node.peerPool.observers.values:
+        if not o.onPeerConnected.isNil:
+          o.onPeerConnected(peer)
+    else:
+      debug "Disconnecting already connected node"
+      await peer.disconnect(AlreadyConnected)
   else:
-    echo "Could not establish connection with incoming peer ",
-         $remote.remoteAddress()
     remote.close()
 
 proc startListening*(node: EthereumNode) =
