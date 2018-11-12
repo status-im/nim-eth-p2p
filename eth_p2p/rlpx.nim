@@ -1108,7 +1108,7 @@ rlpxProtocol p2p(version = 0):
     discard
 
 proc removePeer(network: EthereumNode, peer: Peer) =
-  if network.peerPool != nil:
+  if network.peerPool != nil and not peer.remote.isNil:
     network.peerPool.connectedNodes.del(peer.remote)
 
     for observer in network.peerPool.observers.values:
@@ -1365,12 +1365,22 @@ proc rlpxAccept*(node: EthereumNode,
     result.remote = newNode(initEnode(handshake.remoteHPubkey, address))
 
     await postHelloSteps(result, response)
+  except PeerDisconnected as e:
+    if e.reason == AlreadyConnected:
+      debug "Disconnect during rlpxAccept", reason = e.reason
+    else:
+      debug "Unexpected disconnect during rlpxAccept", reason = e.reason
+    transport.close()
+    result = nil
+    raise e
   except:
+    let e = getCurrentException()
     error "Exception in rlpxAccept",
           err = getCurrentExceptionMsg(),
           stackTrace = getCurrentException().getStackTrace()
     transport.close()
     result = nil
+    raise e
 
 when isMainModule:
 
