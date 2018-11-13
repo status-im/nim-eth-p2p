@@ -102,18 +102,22 @@ proc lookupRandomNode(p: PeerPool) {.async.} =
 proc getRandomBootnode(p: PeerPool): Node =
   p.discovery.bootstrapNodes.rand()
 
+proc addPeer*(pool: PeerPool, peer: Peer): bool =
+  if peer.remote notin pool.connectedNodes:
+    pool.connectedNodes[peer.remote] = peer
+    for o in pool.observers.values:
+      if not o.onPeerConnected.isNil:
+        o.onPeerConnected(peer)
+    return true
+  else: return false
+
 proc connectToNode*(p: PeerPool, n: Node) {.async.} =
   let peer = await p.connect(n)
   if not peer.isNil:
     info "Connection established", peer
-    if peer.remote notin p.connectedNodes:
-      p.connectedNodes[peer.remote] = peer
-      for o in p.observers.values:
-        if not o.onPeerConnected.isNil:
-          o.onPeerConnected(peer)
-    else:
+    if not p.addPeer(peer):
       # In case an incoming connection was added in the meanwhile
-      debug "Disconnecting peer", reason = AlreadyConnected
+      debug "Disconnecting peer (outgoing)", reason = AlreadyConnected
       await peer.disconnect(AlreadyConnected)
 
 proc connectToNodes(p: PeerPool, nodes: seq[Node]) {.async.} =
