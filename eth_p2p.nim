@@ -59,13 +59,10 @@ proc processIncoming(server: StreamServer,
   if not peerfut.failed:
     let peer = peerfut.read()
     if node.peerPool != nil:
-      if peer.remote notin node.peerPool.connectedNodes:
-        node.peerPool.connectedNodes[peer.remote] = peer
-        for o in node.peerPool.observers.values:
-          if not o.onPeerConnected.isNil:
-            o.onPeerConnected(peer)
-      else:
-        debug "Disconnecting already connected node"
+      if not node.peerPool.addPeer(peer):
+        # In case an outgoing connection was added in the meanwhile or a
+        # malicious peer opens multiple connections
+        debug "Disconnecting peer (incoming)", reason = AlreadyConnected
         await peer.disconnect(AlreadyConnected)
   else:
     remote.close()

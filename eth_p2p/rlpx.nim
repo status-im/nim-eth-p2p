@@ -1108,6 +1108,10 @@ rlpxProtocol p2p(version = 0):
     discard
 
 proc removePeer(network: EthereumNode, peer: Peer) =
+  # It is necessary to check if peer.remote still exists. The connection might
+  # have been dropped already from the peers side.
+  # E.g. when receiving a p2p.disconnect message from a peer, a race will happen
+  # between which side disconnects first.
   if network.peerPool != nil and not peer.remote.isNil:
     network.peerPool.connectedNodes.del(peer.remote)
 
