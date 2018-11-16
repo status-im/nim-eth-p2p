@@ -9,7 +9,7 @@
 import
   algorithm, bitops, endians, math, options, sequtils, strutils, tables, times,
   secp256k1, chronicles, asyncdispatch2, eth_common/eth_types, eth_keys, rlp,
-  nimcrypto/[bcmode, hash, keccak, rijndael],
+  hashes, byteutils, nimcrypto/[bcmode, hash, keccak, rijndael, sysrand],
   ../../eth_p2p, ../ecies
 
 const
@@ -20,12 +20,16 @@ const
   payloadLenLenBits = 0b11'u8 ## payload flags length-of-length mask
   signatureBits = 0b100'u8 ## payload flags signature mask
   whisperVersion* = 6
+  defaultMinPow = 0.001'f64
+  defaultMaxMsgSize = 1024 * 1024 # * 10 # should be no higher than max RLPx size
+  bloomSize = 512 div 8
+  defaultQueueCapacity = 256
 
 type
   Hash* = MDigest[256]
   SymKey* = array[256 div 8, byte] ## AES256 key
   Topic* = array[4, byte]
-  Bloom* = array[64, byte]  ## XXX: nim-eth-bloom has really quirky API and fixed
+  Bloom* = array[bloomSize, byte]  ## XXX: nim-eth-bloom has really quirky API and fixed
   ## bloom size.
   ## stint is massive overkill / poor fit - a bloom filter is an array of bits,
   ## not a number
@@ -35,6 +39,7 @@ type
 
     src*: Option[PrivateKey] ## Optional key used for signing message
     dst*: Option[PublicKey] ## Optional key used for asymmetric encryption
+
     symKey*: Option[SymKey] ## Optional key used for symmetric encryption
     payload*: Bytes ## Application data / message contents
     padding*: Option[Bytes] ## Padding - if unset, will automatically pad up to
@@ -59,9 +64,10 @@ type
 
     env*: Envelope
     hash*: Hash ## Hash, as calculated for proof-of-work
-    size*: uint64 ## RLP-encoded size of message
+    size*: uint32 ## RLP-encoded size of message
     pow*: float64 ## Calculated proof-of-work
     bloom*: Bloom ## Filter sent to direct peers for topic-based filtering
+    isP2P: bool
 
   Queue* = object
     ## Bounded message repository
@@ -71,10 +77,38 @@ type
     ## room for those with higher pow, even if they haven't expired yet.
     ## Larger messages and those with high time-to-live will require more pow.
     items*: seq[Message] ## Sorted by proof-of-work
+    itemHashes*: HashSet[Message] ## For easy duplication checking
+    # XXX: itemHashes is added for easy message duplication checking and for
+    # easy pruning of the peer received message sets. It does have an impact on
+    # adding and pruning of items however.
+    # Need to give it some more thought and check where most time is lost in
+    # typical cases, perhaps we are better of with one hash table (lose PoW
+    # sorting however), or perhaps there is a simpler solution...
 
     capacity*: int ## Max messages to keep. \
     ## XXX: really big messages can cause excessive mem usage when using msg \
     ##      count
+
+  # XXX: We have to return more than just the payload
+  FilterMsgHandler* = proc(payload: Bytes) {.closure.}
+
+  Filter* = object
+    src: Option[PublicKey]
+    privateKey: Option[PrivateKey]
+    symKey: Option[SymKey]
+    topics: seq[Topic]
+    powReq: float64
+    allowP2P: bool
+
+    bloom: Bloom # cached bloom filter of all topics of filter
+    handler: FilterMsgHandler
+    # NOTE: could also have a queue here instead, or leave it to the actual client
+
+  WhisperConfig* = object
+    powRequirement*: float64
+    bloom*: Bloom
+    isLightNode*: bool
+    maxMsgSize*: uint32
 
 # Utilities --------------------------------------------------------------------
 
@@ -123,6 +157,43 @@ proc topicBloom*(topic: Topic): Bloom =
 
     assert idx <= 511
     result[idx div 8] = result[idx div 8] or byte(1 shl (idx and 7'u16))
+
+proc generateRandomID(): string =
+  var bytes: array[256 div 8, byte]
+  while true: # XXX: error instead of looping?
+    if randomBytes(bytes) == 256 div 8:
+      result = toHex(bytes)
+      break
+
+proc `or`(a, b: Bloom): Bloom =
+  for i in 0..<a.len:
+    result[i] = a[i] or b[i]
+
+proc bytesCopy(bloom: var Bloom, b: Bytes) =
+  assert b.len == bloomSize
+  # memcopy?
+  for i in 0..<bloom.len:
+    bloom[i] = b[i]
+
+proc toBloom*(topics: openArray[Topic]): Bloom =
+  #if topics.len == 0:
+    # XXX: should we set the bloom here the all 1's ?
+  for topic in topics:
+    result = result or topicBloom(topic)
+
+proc bloomFilterMatch(filter, sample: Bloom): bool =
+  for i in 0..<filter.len:
+    if (filter[i] or sample[i]) != filter[i]:
+      return false
+  return true
+
+proc fullBloom*(): Bloom =
+  for i in 0..<result.len:
+    result[i] = 0xFF
+
+proc emptyBloom*(): Bloom =
+  for i in 0..<result.len:
+    result[i] = 0x00
 
 proc encryptAesGcm(plain: openarray[byte], key: SymKey,
     iv: array[gcmIVLen, byte]): Bytes =
@@ -339,6 +410,10 @@ proc toRlp(self: Envelope): Bytes =
   ## What gets sent out over the wire includes the nonce
   rlp.encode(self)
 
+# NOTE: minePow and calcPowHash are different from go-ethereum implementation.
+# Is correct however with EIP-627, but perhaps this is not up to date.
+# Follow-up here: https://github.com/ethereum/go-ethereum/issues/18070
+
 proc minePow*(self: Envelope, seconds: float): uint64 =
   ## For the given envelope, spend millis milliseconds to find the
   ## best proof-of-work and return the nonce
@@ -386,21 +461,52 @@ proc cmpPow(a, b: Message): int =
 proc initMessage*(env: Envelope): Message =
   result.env = env
   result.hash = env.calcPowHash()
-  result.size = env.toRlp().len().uint64 # XXX: calc len without creating RLP
+  debug "PoW hash", hash = result.hash
+  result.size = env.toRlp().len().uint32 # XXX: calc len without creating RLP
   result.pow = calcPow(result.size, result.env.ttl, result.hash)
+  result.bloom = topicBloom(env.topic)
+
+proc hash*(msg: Message): hashes.Hash = hash(msg.hash.data)
+
+proc allowed(msg: Message, config: WhisperConfig): bool =
+  # Check max msg size, already happens in RLPx but there is a specific shh
+  # max msg size which should always be < RLPx max msg size
+  if msg.size > config.maxMsgSize:
+    warn "Message size too large", size = msg.size
+    return false
+
+  if msg.pow < config.powRequirement:
+    warn "too low PoW envelope", pow = msg.pow, minPow = config.powRequirement
+    return false
+
+  if not bloomFilterMatch(config.bloom, msg.bloom):
+    warn "received message does not match node bloomfilter"
+    return false
+
+  return true
 
 # Queues -----------------------------------------------------------------------
 
 proc initQueue*(capacity: int): Queue =
   result.items = newSeqOfCap[Message](capacity)
   result.capacity = capacity
+  result.itemHashes.init()
 
 proc prune(self: var Queue) =
   ## Remove items that are past their expiry time
-  let now = epochTime().uint64
-  self.items.keepIf(proc(m: Message): bool = m.env.expiry > now)
+  let now = epochTime().uint32
 
-proc add*(self: var Queue, msg: Message) =
+  # keepIf code + pruning of hashset
+  var pos = 0
+  for i in 0 ..< len(self.items):
+    if self.items[i].env.expiry > now:
+      if pos != i:
+        shallowCopy(self.items[pos], self.items[i])
+      inc(pos)
+    else: self.itemHashes.excl(self.items[i])
+  setLen(self.items, pos)
+
+proc add*(self: var Queue, msg: Message): bool =
   ## Add a message to the queue.
   ## If we're at capacity, we will be removing, in order:
   ## * expired messages
@@ -416,31 +522,352 @@ proc add*(self: var Queue, msg: Message) =
       if last.pow > msg.pow or
         (last.pow == msg.pow and last.env.expiry > msg.env.expiry):
         # The new message has less pow or will expire earlier - drop it
-        self.items.del(self.items.len() - 1)
+        return false
 
-  self.items.insert(msg, self.items.lowerBound(msg, cmpPow))
+      self.items.del(self.items.len() - 1)
+      self.itemHashes.excl(last)
 
-rlpxProtocol shh(version = whisperVersion):
+  # check for duplicate
+  # NOTE: Could also track if duplicates come from the same peer and disconnect
+  # from that peer. Is this tracking overhead worth it though?
+  if self.itemHashes.containsOrIncl(msg):
+    return false
+  else:
+    self.items.insert(msg, self.items.lowerBound(msg, cmpPow))
+    return true
+
+# Filters ----------------------------------------------------------------------
+proc newFilter*(src = none[PublicKey](), privateKey = none[PrivateKey](),
+                symKey = none[SymKey](), topics: seq[Topic] = @[],
+                powReq = 0.0, allowP2P = false): Filter =
+  Filter(src: src, privateKey: privateKey, symKey: symKey, topics: topics,
+         powReq: powReq, allowP2P: allowP2P, bloom: toBloom(topics))
+
+proc notify(filters: Table[string, Filter], msg: Message) =
+ var decoded: Option[DecodedPayload]
+ var keyHash: Hash
+
+ for filter in filters.values:
+   if not filter.allowP2P and msg.isP2P:
+     continue
+
+   # NOTE: should we still check PoW if msg.isP2P? Not much sense to it?
+   if filter.powReq > 0 and msg.pow < filter.powReq:
+     continue
+
+   if filter.topics.len > 0:
+     if msg.env.topic notin filter.topics:
+       continue
+
+   # Decode, if already decoded previously check if hash of key matches
+   if decoded.isNone():
+     decoded = decode(msg.env.data, dst = filter.privateKey,
+                      symKey = filter.symKey)
+     if filter.privateKey.isSome():
+       keyHash = keccak256.digest(filter.privateKey.get().data)
+     elif filter.symKey.isSome():
+       keyHash = keccak256.digest(filter.symKey.get())
+     # else:
+       # NOTE: should we error on messages without encryption?
+     if decoded.isNone():
+       continue
+   else:
+     if filter.privateKey.isSome():
+       if keyHash != keccak256.digest(filter.privateKey.get().data):
+         continue
+     elif filter.symKey.isSome():
+       if keyHash != keccak256.digest(filter.symKey.get()):
+         continue
+     # else:
+       # NOTE: should we error on messages without encryption?
+
+   # When decoding is done we can check the src (signature)
+   if filter.src.isSome():
+     var src: Option[PublicKey] = decoded.get().src
+     if not src.isSome():
+       continue
+     elif src.get() != filter.src.get():
+       continue
+
+   # Run callback
+   # NOTE: could also add the message to a filter queue
+   filter.handler(decoded.get().payload)
+
+type
+  PeerState = ref object
+    initialized*: bool # when successfully completed the handshake
+    powRequirement*: float64
+    bloom*: Bloom
+    isLightNode*: bool
+    trusted*: bool
+    received: HashSet[Message]
+    running*: bool
+
+  WhisperState = ref object
+    queue*: Queue
+    filters*: Table[string, Filter]
+    config*: WhisperConfig
+
+proc run(peer: Peer) {.async.}
+proc run(node: EthereumNode, network: WhisperState) {.async.}
+
+proc initProtocolState*(network: var WhisperState, node: EthereumNode) =
+  network.queue = initQueue(defaultQueueCapacity)
+  network.filters = initTable[string, Filter]()
+  network.config.bloom = fullBloom()
+  network.config.powRequirement = defaultMinPow
+  network.config.isLightNode = false
+  network.config.maxMsgSize = defaultMaxMsgSize
+  asyncCheck node.run(network)
+
+rlpxProtocol shh(version = whisperVersion,
+                 peerState = PeerState,
+                 networkState = WhisperState):
+
+  onPeerConnected do (peer: Peer):
+    debug "onPeerConnected Whisper"
+    let
+      shhNetwork = peer.networkState
+      shhPeer = peer.state
+
+    asyncCheck peer.status(whisperVersion,
+                           cast[uint](shhNetwork.config.powRequirement),
+                           @(shhNetwork.config.bloom),
+                           shhNetwork.config.isLightNode)
+
+    # XXX: we should allow this to timeout and disconnect if so
+    let m = await peer.nextMsg(shh.status)
+    if m.protocolVersion == whisperVersion:
+      debug "Suitable Whisper peer", peer, whisperVersion
+    else:
+      raise newException(UselessPeerError, "Incompatible Whisper version")
+
+    shhPeer.powRequirement = cast[float64](m.powConverted)
+
+    if m.bloom.len > 0:
+      if m.bloom.len != bloomSize:
+        raise newException(UselessPeerError, "Bloomfilter size mismatch")
+      else:
+        shhPeer.bloom.bytesCopy(m.bloom)
+    else:
+      # If no bloom filter is send we allow all
+      shhPeer.bloom = fullBloom()
+
+    shhPeer.isLightNode = m.isLightNode
+    if shhPeer.isLightNode and shhNetwork.config.isLightNode:
+      # No sense in connecting two light nodes so we disconnect
+      raise newException(UselessPeerError, "Two light nodes connected")
+
+    shhPeer.received.init()
+    shhPeer.trusted = false
+    shhPeer.initialized = true
+
+    asyncCheck peer.run()
+    debug "Whisper peer initialized"
+
+  onPeerDisconnected do (peer: Peer, reason: DisconnectionReason) {.gcsafe.}:
+     peer.state.running = false
+
   proc status(peer: Peer,
               protocolVersion: uint,
-              powCoverted: uint,
+              powConverted: uint,
               bloom: Bytes,
               isLightNode: bool) =
     discard
 
   proc messages(peer: Peer, envelopes: openarray[Envelope]) =
-    discard
+    if not peer.state.initialized:
+      warn "Handshake not completed yet, discarding messages"
+      return
 
-  proc powRequirement(peer: Peer, value: float64) =
-    discard
+    for envelope in envelopes:
+      # check if expired or in future, or ttl not 0
+      if not envelope.valid():
+        warn "expired or future timed envelope"
+        # disconnect from peers sending bad envelopes
+        # await peer.disconnect(SubprotocolReason)
+        continue
+
+      var msg = initMessage(envelope)
+      if not msg.allowed(peer.networkState.config):
+        # disconnect from peers sending bad envelopes
+        # await peer.disconnect(SubprotocolReason)
+        continue
+
+      # This peer send it thus should not receive it again
+      peer.state(shh).received.incl(msg)
+
+      if peer.networkState.queue.add(msg):
+        # notify filters of this message
+        peer.networkState.filters.notify(msg)
+
+  proc powRequirement(peer: Peer, value: uint) =
+    if not peer.state.initialized:
+      warn "Handshake not completed yet, discarding powRequirement"
+      return
+
+    peer.state.powRequirement = cast[float64](value)
 
   proc bloomFilterExchange(peer: Peer, bloom: Bytes) =
-    discard
+    if not peer.state.initialized:
+      warn "Handshake not completed yet, discarding bloomFilterExchange"
+      return
+
+    peer.state.bloom.bytesCopy(bloom)
 
   nextID 126
 
   proc p2pRequest(peer: Peer, envelope: Envelope) =
+    # TODO: here we would have to allow to insert some specific implementation
+    # such as e.g. Whisper Mail Server
     discard
 
   proc p2pMessage(peer: Peer, envelope: Envelope) =
-    discard
+    if peer.state.trusted:
+      # when trusted we can bypass any checks on envelope
+      var msg = Message(env: envelope, isP2P: true)
+      peer.networkState.filters.notify(msg)
+
+# 'Runner' calls ---------------------------------------------------------------
+
+proc processQueue(peer: Peer) =
+  var envelopes: seq[Envelope] = @[]
+  for message in peer.networkState(shh).queue.items:
+    if peer.state(shh).received.contains(message):
+      # debug "message was already send to peer"
+      continue
+
+    if message.pow < peer.state(shh).powRequirement:
+      debug "Message PoW too low for peer"
+      continue
+
+    if not bloomFilterMatch(peer.state(shh).bloom, message.bloom):
+      debug "Peer bloomfilter blocked message"
+      continue
+
+    debug "Adding envelope"
+    envelopes.add(message.env)
+    peer.state(shh).received.incl(message)
+
+  debug "Sending envelopes", amount=envelopes.len
+  # await peer.messages(envelopes)
+  asyncCheck peer.messages(envelopes)
+
+proc run(peer: Peer) {.async.} =
+  peer.state(shh).running = true
+  while peer.state(shh).running:
+    if not peer.networkState(shh).config.isLightNode:
+      peer.processQueue()
+    await sleepAsync(300)
+
+proc pruneReceived(node: EthereumNode) =
+  if node.peerPool != nil: # XXX: a bit dirty to need to check for this here ...
+    for peer in node.peers(shh):
+      if not peer.state(shh).initialized:
+        continue
+
+      # NOTE: Perhaps alter the queue prune call to keep track of a HashSet
+      # of pruned messages (as these should be smaller), and diff this with
+      # the received sets.
+      peer.state(shh).received = intersection(peer.state(shh).received,
+                                              node.protocolState(shh).queue.itemHashes)
+
+proc run(node: EthereumNode, network: WhisperState) {.async.} =
+  while true:
+    # prune message queue every second
+    # TTL unit is in seconds, so this should be sufficient?
+    network.queue.prune()
+    # pruning the received sets is not necessary for correct workings
+    # but simply from keeping the sets growing indefinitely
+    node.pruneReceived()
+    await sleepAsync(1000)
+
+# Public EthereumNode calls ----------------------------------------------------
+
+# XXX: add targetPeer option
+proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
+                  symKey = none[SymKey](), src = none[PrivateKey](),
+                  ttl: uint32, topic: Topic, payload: Bytes, powTime = 1) =
+  # NOTE: Allow a post without a key? Encryption is mandatory in v6?
+
+  # NOTE: Do we allow a light node to add messages to queue?
+  # if node.protocolState(shh).isLightNode:
+  #   error "Light node not allowed to post messages"
+  #   return
+
+  var payload = encode(Payload(payload: payload, src: src, dst: pubKey,
+                               symKey: symKey))
+  if payload.isSome():
+    var env = Envelope(expiry:epochTime().uint32 + ttl + powTime.uint32,
+                       ttl: ttl, topic: topic, data: payload.get(), nonce: 0)
+    # XXX: make this non blocking or not?
+    # In its current blocking state, it could be noticed by a peer that no
+    # messages are send for a while, and thus that mining PoW is done, and that
+    # next messages contains a message originated from this peer
+    env.nonce = env.minePow(powTime.float)
+
+    if not env.valid(): # actually just ttl !=0 is sufficient
+      return
+
+    # We have to do the same checks here as in the messages proc not to leak
+    # any information that the message originates from this node.
+    var msg = initMessage(env)
+    if not msg.allowed(node.protocolState(shh).config):
+      return
+
+    debug "Adding message to queue"
+    if node.protocolState(shh).queue.add(msg):
+      # Also notify our own filters of the message we are sending,
+      # e.g. msg from local Dapp to Dapp
+      node.protocolState(shh).filters.notify(msg)
+  else:
+    error "encoding failed"
+
+proc subscribeFilter*(node: EthereumNode, filter: Filter,
+                      handler: FilterMsgHandler): string =
+  # NOTE: Should we allow a filter without a key? Encryption is mandatory in v6?
+  # Check if asymmetric _and_ symmetric key? Now asymmetric just has precedence.
+  var id = generateRandomID()
+  var filter = filter
+  filter.handler = handler
+  node.protocolState(shh).filters.add(id, filter)
+  debug "Filter added", filter = id
+  return id
+
+proc unsubscribeFilter*(node: EthereumNode, filterId: string): bool =
+  var filter: Filter
+  return node.protocolState(shh).filters.take(filterId, filter)
+
+proc setPowRequirement*(node: EthereumNode, powReq: float64) {.async.} =
+  # NOTE: do we need a tolerance of old PoW for some time?
+  node.protocolState(shh).config.powRequirement = powReq
+  for peer in node.peers(shh):
+    # asyncCheck peer.powRequirement(cast[uint](powReq))
+    await peer.powRequirement(cast[uint](powReq))
+
+proc setBloomFilter*(node: EthereumNode, bloom: Bloom) {.async.} =
+  # NOTE: do we need a tolerance of old bloom filter for some time?
+  node.protocolState(shh).config.bloom = bloom
+  for peer in node.peers(shh):
+    # asyncCheck peer.bloomFilterExchange(@bloom)
+    await peer.bloomFilterExchange(@bloom)
+
+proc filtersToBloom*(node: EthereumNode): Bloom =
+  for filter in node.protocolState(shh).filters.values:
+    if filter.topics.len > 0:
+      result = result or filter.bloom
+
+proc setMaxMessageSize*(node: EthereumNode, size: uint32) =
+  node.protocolState(shh).config.maxMsgSize = size
+
+proc setPeerTrusted*(node: EthereumNode, peerId: NodeId) =
+  for peer in node.peers(shh):
+    if peer.remote.id == peerId:
+      peer.state(shh).trusted = true
+      break
+
+# XXX: should probably only be allowed before connection is made,
+# as there exists no message to communicate to peers that it is a light node
+# How to arrange that?
+proc setLightNode*(node: EthereumNode, isLightNode: bool) =
+  node.protocolState(shh).config.isLightNode = isLightNode
