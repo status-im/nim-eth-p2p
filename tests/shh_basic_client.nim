@@ -122,7 +122,6 @@ let encPrivateKey = initPrivateKey("5dc5381cae54ba3174dc0d46040fe11614d0cc94d411
 let encPublicKey = encPrivateKey.getPublicKey()
 let signPrivateKey = initPrivateKey("365bda0757d22212b04fada4b9222f8c3da59b49398fa04cf612481cd893b0a3")
 let signPublicKey = signPrivateKey.getPublicKey()
-# var symKey: SymKey = [byte 234, 86, 75, 97, 0, 214, 53, 41, 62, 204, 78, 253, 220, 134, 78, 203, 58, 35, 51, 61, 95, 218, 42, 78, 146, 142, 229, 232, 151, 219, 224, 32]
 var symKey: SymKey
 let topic = [byte 0x12, 0, 0, 0]
 
@@ -165,11 +164,6 @@ if config.watch:
   discard node.subscribeFilter(newFilter(some(signPublicKey),
                                          symKey = some(symKey),
                                          topics = @[topic]), handler)
-
-  # discard node.setBloomFilter(node.filtersToBloom())
-  # discard node.setBloomFilter(emptyBloom())
-  # waitFor sleepAsync(10000)
-  # echo data.repr
 
 if config.post:
   # encrypted asym
