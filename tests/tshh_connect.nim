@@ -203,5 +203,21 @@ asyncTest "Lightnode":
     1 == 1
 
 asyncTest "P2P":
+  let topic = [byte 0, 0, 0, 0]
+  var f: Future[int] = newFuture[int]()
+  proc handler(payload: Bytes) =
+    check payload == repeat(byte 4, 10)
+    f.complete(1)
+
+  var filter = node1.subscribeFilter(newFilter(topics = @[topic], allowP2P = true),
+                                     handler)
+  node1.setPeerTrusted(toNodeId(node2.keys.pubkey))
+  node2.postMessage(ttl = 2, topic = topic, payload = repeat(byte 4, 10),
+                    targetPeer = some(toNodeId(node1.keys.pubkey)))
+
+  await f or sleepAsync(300)
   check:
-    1 == 1
+    f.finished == true
+    f.read() == 1
+    node1.protocolState(shh).queue.items.len == 0
+    node2.protocolState(shh).queue.items.len == 0
