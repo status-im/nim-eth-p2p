@@ -21,9 +21,10 @@ const
   signatureBits = 0b100'u8 ## payload flags signature mask
   whisperVersion* = 6
   defaultMinPow = 0.001'f64
-  defaultMaxMsgSize = 1024 * 1024 # * 10 # should be no higher than max RLPx size
+  defaultMaxMsgSize = 1024'u32 * 1024'u32 # * 10 # should be no higher than max RLPx size
   bloomSize = 512 div 8
   defaultQueueCapacity = 256
+  defaultFilterQueueCapacity = 64
 
 type
   Hash* = MDigest[256]
@@ -47,6 +48,7 @@ type
     src*: Option[PublicKey] ## If the message was signed, this is the public key
                             ## of the source
     payload*: Bytes ## Application data / message contents
+    padding*: Option[Bytes] # XXX: to be added still
 
   Envelope* = object
     ## What goes on the wire in the whisper protocol - a payload and some
@@ -68,6 +70,14 @@ type
     bloom*: Bloom ## Filter sent to direct peers for topic-based filtering
     isP2P: bool
 
+  ReceivedMessage* = object
+    decoded*: DecodedPayload
+    timestamp*: uint32
+    ttl*: uint32
+    topic*: Topic
+    pow*: float64
+    hash*: Hash
+
   Queue* = object
     ## Bounded message repository
     ##
@@ -88,8 +98,7 @@ type
     ## XXX: really big messages can cause excessive mem usage when using msg \
     ##      count
 
-  # XXX: We have to return more than just the payload
-  FilterMsgHandler* = proc(payload: Bytes) {.closure.}
+  FilterMsgHandler* = proc(msg: ReceivedMessage) {.closure.}
 
   Filter* = object
     src: Option[PublicKey]
@@ -100,8 +109,8 @@ type
     allowP2P: bool
 
     bloom: Bloom # cached bloom filter of all topics of filter
-    handler: FilterMsgHandler
-    # NOTE: could also have a queue here instead, or leave it to the actual client
+    handler: Option[FilterMsgHandler]
+    queue: seq[ReceivedMessage]
 
   WhisperConfig* = object
     powRequirement*: float64
@@ -541,11 +550,11 @@ proc newFilter*(src = none[PublicKey](), privateKey = none[PrivateKey](),
   Filter(src: src, privateKey: privateKey, symKey: symKey, topics: topics,
          powReq: powReq, allowP2P: allowP2P, bloom: toBloom(topics))
 
-proc notify(filters: Table[string, Filter], msg: Message) =
+proc notify(filters: var Table[string, Filter], msg: Message) =
  var decoded: Option[DecodedPayload]
  var keyHash: Hash
 
- for filter in filters.values:
+ for filter in filters.mvalues:
    if not filter.allowP2P and msg.isP2P:
      continue
 
@@ -587,9 +596,17 @@ proc notify(filters: Table[string, Filter], msg: Message) =
      elif src.get() != filter.src.get():
        continue
 
-   # Run callback
-   # NOTE: could also add the message to a filter queue
-   filter.handler(decoded.get().payload)
+   var receivedMsg = ReceivedMessage(decoded: decoded.get(),
+                                     timestamp: msg.env.expiry - msg.env.ttl,
+                                     ttl: msg.env.ttl,
+                                     topic: msg.env.topic,
+                                     pow: msg.pow,
+                                     hash: msg.hash)
+   # Either run callback or add to queue
+   if filter.handler.isSome():
+     filter.handler.get()(receivedMsg)
+   else:
+     filter.queue.insert(receivedMsg)
 
 type
   PeerState = ref object
@@ -788,21 +805,21 @@ proc run(node: EthereumNode, network: WhisperState) {.async.} =
 
 # Public EthereumNode calls ----------------------------------------------------
 
-proc sendP2PMessage*(node: EthereumNode, peerId: NodeId, env: Envelope) =
+proc sendP2PMessage*(node: EthereumNode, peerId: NodeId, env: Envelope): bool =
   for peer in node.peers(shh):
     if peer.remote.id == peerId:
       asyncCheck peer.p2pMessage(env)
-      break
+      return true
 
-proc sendMessage*(node: EthereumNode, env: var Envelope) =
+proc sendMessage*(node: EthereumNode, env: var Envelope): bool =
   if not env.valid(): # actually just ttl !=0 is sufficient
-    return
+    return false
 
   # We have to do the same checks here as in the messages proc not to leak
   # any information that the message originates from this node.
   var msg = initMessage(env)
   if not msg.allowed(node.protocolState(shh).config):
-    return
+    return false
 
   debug "Adding message to queue"
   if node.protocolState(shh).queue.add(msg):
@@ -810,10 +827,13 @@ proc sendMessage*(node: EthereumNode, env: var Envelope) =
     # e.g. msg from local Dapp to Dapp
     node.protocolState(shh).filters.notify(msg)
 
+  return true
+
+# XXX: add padding
 proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
                   symKey = none[SymKey](), src = none[PrivateKey](),
                   ttl: uint32, topic: Topic, payload: Bytes, powTime = 1,
-                  targetPeer = none[NodeId]()) =
+                  targetPeer = none[NodeId]()): bool =
   # NOTE: Allow a post without a key? Encryption is mandatory in v6?
   var payload = encode(Payload(payload: payload, src: src, dst: pubKey,
                                symKey: symKey))
@@ -821,29 +841,33 @@ proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
     var env = Envelope(expiry:epochTime().uint32 + ttl + powTime.uint32,
                        ttl: ttl, topic: topic, data: payload.get(), nonce: 0)
 
-    # allow lightnode to post only direct p2p messages
+    # Allow lightnode to post only direct p2p messages
     if targetPeer.isSome():
-      node.sendP2PMessage(targetPeer.get(), env)
+      return node.sendP2PMessage(targetPeer.get(), env)
     elif not node.protocolState(shh).config.isLightNode:
       # XXX: make this non blocking or not?
       # In its current blocking state, it could be noticed by a peer that no
       # messages are send for a while, and thus that mining PoW is done, and that
       # next messages contains a message originated from this peer
       env.nonce = env.minePow(powTime.float)
-      node.sendMessage(env)
+      return node.sendMessage(env)
     else:
       error "Light node not allowed to post messages"
-
+      return false
   else:
-   error "Encoding of payload failed"
+    error "Encoding of payload failed"
+    return false
 
 proc subscribeFilter*(node: EthereumNode, filter: Filter,
-                      handler: FilterMsgHandler): string =
+                      handler = none[FilterMsgHandler]()): string =
   # NOTE: Should we allow a filter without a key? Encryption is mandatory in v6?
   # Check if asymmetric _and_ symmetric key? Now asymmetric just has precedence.
   var id = generateRandomID()
   var filter = filter
-  filter.handler = handler
+  if handler.isSome():
+    filter.handler = handler
+  else:
+    filter.queue = newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
   node.protocolState(shh).filters.add(id, filter)
   debug "Filter added", filter = id
   return id
@@ -851,6 +875,14 @@ proc subscribeFilter*(node: EthereumNode, filter: Filter,
 proc unsubscribeFilter*(node: EthereumNode, filterId: string): bool =
   var filter: Filter
   return node.protocolState(shh).filters.take(filterId, filter)
+
+proc getFilterMessages*(node: EthereumNode, filterId: string): seq[ReceivedMessage] =
+  result = @[]
+  if node.protocolState(shh).filters.contains(filterId):
+    if node.protocolState(shh).filters[filterId].handler.isNone():
+      result = node.protocolState(shh).filters[filterId].queue
+      node.protocolState(shh).filters[filterId].queue =
+        newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
 
 proc setPowRequirement*(node: EthereumNode, powReq: float64) {.async.} =
   # NOTE: do we need a tolerance of old PoW for some time?
@@ -871,14 +903,18 @@ proc filtersToBloom*(node: EthereumNode): Bloom =
     if filter.topics.len > 0:
       result = result or filter.bloom
 
-proc setMaxMessageSize*(node: EthereumNode, size: uint32) =
+proc setMaxMessageSize*(node: EthereumNode, size: uint32): bool =
+  if size > defaultMaxMsgSize:
+    error "size > maxMsgSize"
+    return false
   node.protocolState(shh).config.maxMsgSize = size
+  return true
 
-proc setPeerTrusted*(node: EthereumNode, peerId: NodeId) =
+proc setPeerTrusted*(node: EthereumNode, peerId: NodeId): bool =
   for peer in node.peers(shh):
     if peer.remote.id == peerId:
       peer.state(shh).trusted = true
-      break
+      return true
 
 # XXX: should probably only be allowed before connection is made,
 # as there exists no message to communicate to peers that it is a light node

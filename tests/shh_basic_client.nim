@@ -145,42 +145,44 @@ else:
   waitFor node.connectToNetwork(@[bootENode], true, true)
 
 if config.watch:
-  var data: seq[Bytes] = @[]
-  proc handler(payload: Bytes) =
-    echo payload.repr
-    data.add(payload)
+  proc handler(msg: ReceivedMessage) =
+    echo msg.decoded.payload.repr
 
   # filter encrypted asym
   discard node.subscribeFilter(newFilter(privateKey = some(encPrivateKey),
-                                         topics = @[topic]), handler)
+                                         topics = @[topic]),
+                               some((FilterMsgHandler)handler))
   # filter encrypted asym + signed
   discard node.subscribeFilter(newFilter(some(signPublicKey),
                                          privateKey = some(encPrivateKey),
-                                         topics = @[topic]), handler)
+                                         topics = @[topic]),
+                               some((FilterMsgHandler)handler))
   # filter encrypted sym
   discard node.subscribeFilter(newFilter(symKey = some(symKey),
-                                         topics = @[topic]), handler)
+                                         topics = @[topic]),
+                               some((FilterMsgHandler)handler))
   # filter encrypted sym + signed
   discard node.subscribeFilter(newFilter(some(signPublicKey),
                                          symKey = some(symKey),
-                                         topics = @[topic]), handler)
+                                         topics = @[topic]),
+                               some((FilterMsgHandler)handler))
 
 if config.post:
   # encrypted asym
-  node.postMessage(some(encPublicKey), ttl = 5, topic = topic,
-                   payload = repeat(byte 65, 10))
+  discard node.postMessage(some(encPublicKey), ttl = 5, topic = topic,
+                           payload = repeat(byte 65, 10))
   poll()
   # # encrypted asym + signed
-  node.postMessage(some(encPublicKey), src = some(signPrivateKey), ttl = 5,
-                   topic = topic, payload = repeat(byte 66, 10))
+  discard node.postMessage(some(encPublicKey), src = some(signPrivateKey),
+                           ttl = 5, topic = topic, payload = repeat(byte 66, 10))
   poll()
   # # encrypted sym
-  node.postMessage(symKey = some(symKey), ttl = 5, topic = topic,
-                   payload = repeat(byte 67, 10))
+  discard node.postMessage(symKey = some(symKey), ttl = 5, topic = topic,
+                           payload = repeat(byte 67, 10))
   poll()
   # # encrypted sym + signed
-  node.postMessage(symKey = some(symKey), src = some(signPrivateKey), ttl = 5,
-                   topic = topic, payload = repeat(byte 68, 10))
+  discard node.postMessage(symKey = some(symKey), src = some(signPrivateKey),
+                           ttl = 5, topic = topic, payload = repeat(byte 68, 10))
 
 while true:
   poll()
