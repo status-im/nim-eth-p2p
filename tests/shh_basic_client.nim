@@ -123,6 +123,8 @@ let encPublicKey = encPrivateKey.getPublicKey()
 let signPrivateKey = initPrivateKey("365bda0757d22212b04fada4b9222f8c3da59b49398fa04cf612481cd893b0a3")
 let signPublicKey = signPrivateKey.getPublicKey()
 var symKey: SymKey
+# To test with geth: all 0's key is invalid in geth console
+symKey[31] = 1
 let topic = [byte 0x12, 0, 0, 0]
 
 if config.main:

@@ -48,7 +48,7 @@ type
     src*: Option[PublicKey] ## If the message was signed, this is the public key
                             ## of the source
     payload*: Bytes ## Application data / message contents
-    padding*: Option[Bytes] # XXX: to be added still
+    padding*: Option[Bytes] ## Message padding
 
   Envelope* = object
     ## What goes on the wire in the whisper protocol - a payload and some
@@ -268,6 +268,7 @@ proc encode*(self: Payload): Option[Bytes] =
 
   let padLen =
     if self.padding.isSome(): self.padding.get().len
+    # is there a reason why 256 bytes are padded when the dataLen is 256?
     else: padMaxLen - (dataLen mod padMaxLen)
 
   # buffer space that we need to allocate
@@ -396,6 +397,13 @@ proc decode*(data: openarray[byte], dst = none[PrivateKey](),
       debug "Failed to recover signature key", err
       return
     res.src = some(key)
+
+  if hasSignature:
+    if plain.len > pos + eth_keys.RawSignatureSize:
+      res.padding = some(plain[pos .. ^(eth_keys.RawSignatureSize+1)])
+  else:
+    if plain.len > pos:
+      res.padding = some(plain[pos .. ^1])
 
   return some(res)
 
@@ -829,14 +837,14 @@ proc sendMessage*(node: EthereumNode, env: var Envelope): bool =
 
   return true
 
-# XXX: add padding
 proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
                   symKey = none[SymKey](), src = none[PrivateKey](),
-                  ttl: uint32, topic: Topic, payload: Bytes, powTime = 1,
+                  ttl: uint32, topic: Topic, payload: Bytes,
+                  padding = none[Bytes](), powTime = 1,
                   targetPeer = none[NodeId]()): bool =
   # NOTE: Allow a post without a key? Encryption is mandatory in v6?
   var payload = encode(Payload(payload: payload, src: src, dst: pubKey,
-                               symKey: symKey))
+                               symKey: symKey, padding: padding))
   if payload.isSome():
     var env = Envelope(expiry:epochTime().uint32 + ttl + powTime.uint32,
                        ttl: ttl, topic: topic, data: payload.get(), nonce: 0)
