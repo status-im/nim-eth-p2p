@@ -8,7 +8,7 @@
 #            MIT license (LICENSE-MIT)
 
 import
-  sequtils, options, unittest,
+  sequtils, options, unittest, times,
   nimcrypto/hash,
   eth_keys, rlp,
   eth_p2p/rlpx_protocols/shh_protocol as shh
@@ -189,6 +189,63 @@ suite "Whisper envelope":
     #     https://github.com/paritytech/parity-ethereum/issues/9625
     check $calcPowHash(env0) ==
       "A13B48480AEB3123CD2358516E2E8EE9FCB0F4CB37E68CD09FDF7F9A7E14767C"
+
+  test "should validate and allow envelope according to config":
+    let ttl = 1'u32
+    let topic = [byte 1, 2, 3, 4]
+    let config = WhisperConfig(powRequirement: 0, bloom: topic.topicBloom(),
+                               isLightNode: false, maxMsgSize: defaultMaxMsgSize)
+
+    let env = Envelope(expiry:epochTime().uint32 + ttl, ttl: ttl, topic: topic,
+                       data: repeat(byte 9, 256), nonce: 0)
+    check env.valid()
+
+    let msg = initMessage(env)
+    check msg.allowed(config)
+
+  test "should invalidate envelope due to ttl 0":
+    let ttl = 0'u32
+    let topic = [byte 1, 2, 3, 4]
+    let config = WhisperConfig(powRequirement: 0, bloom: topic.topicBloom(),
+                               isLightNode: false, maxMsgSize: defaultMaxMsgSize)
+
+    let env = Envelope(expiry:epochTime().uint32 + ttl, ttl: ttl, topic: topic,
+                       data: repeat(byte 9, 256), nonce: 0)
+    check env.valid() == false
+
+  test "should invalidate envelope due to expired":
+    let ttl = 1'u32
+    let topic = [byte 1, 2, 3, 4]
+    let config = WhisperConfig(powRequirement: 0, bloom: topic.topicBloom(),
+                               isLightNode: false, maxMsgSize: defaultMaxMsgSize)
+
+    let env = Envelope(expiry:epochTime().uint32, ttl: ttl, topic: topic,
+                       data: repeat(byte 9, 256), nonce: 0)
+    check env.valid() == false
+
+  test "should invalidate envelope due to in the future":
+    let ttl = 1'u32
+    let topic = [byte 1, 2, 3, 4]
+    let config = WhisperConfig(powRequirement: 0, bloom: topic.topicBloom(),
+                               isLightNode: false, maxMsgSize: defaultMaxMsgSize)
+
+    # there is currently a 2 second tolerance, hence the + 3
+    let env = Envelope(expiry:epochTime().uint32 + ttl + 3, ttl: ttl, topic: topic,
+                       data: repeat(byte 9, 256), nonce: 0)
+    check env.valid() == false
+
+  test "should not allow envelope due to bloom filter":
+    let topic = [byte 1, 2, 3, 4]
+    let wrongTopic = [byte 9, 8, 7, 6]
+    let config = WhisperConfig(powRequirement: 0, bloom: wrongTopic.topicBloom(),
+                               isLightNode: false, maxMsgSize: defaultMaxMsgSize)
+
+    let env = Envelope(expiry:100000 , ttl: 30, topic: topic,
+                       data: repeat(byte 9, 256), nonce: 0)
+
+    let msg = initMessage(env)
+    check msg.allowed(config) == false
+
 
 suite "Whisper queue":
   test "should throw out lower proof-of-work item when full":
