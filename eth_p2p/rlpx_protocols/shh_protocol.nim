@@ -19,12 +19,12 @@ const
   padMaxLen = 256 ## payload will be padded to multiples of this by default
   payloadLenLenBits = 0b11'u8 ## payload flags length-of-length mask
   signatureBits = 0b100'u8 ## payload flags signature mask
-  whisperVersion* = 6
-  defaultMinPow = 0.001'f64
-  defaultMaxMsgSize = 1024'u32 * 1024'u32 # * 10 # should be no higher than max RLPx size
   bloomSize = 512 div 8
   defaultQueueCapacity = 256
   defaultFilterQueueCapacity = 64
+  whisperVersion* = 6
+  defaultMinPow* = 0.001'f64
+  defaultMaxMsgSize* = 1024'u32 * 1024'u32 # * 10 # should be no higher than max RLPx size
 
 type
   Hash* = MDigest[256]
@@ -483,7 +483,7 @@ proc initMessage*(env: Envelope): Message =
 
 proc hash*(msg: Message): hashes.Hash = hash(msg.hash.data)
 
-proc allowed(msg: Message, config: WhisperConfig): bool =
+proc allowed*(msg: Message, config: WhisperConfig): bool =
   # Check max msg size, already happens in RLPx but there is a specific shh
   # max msg size which should always be < RLPx max msg size
   if msg.size > config.maxMsgSize:
@@ -491,11 +491,11 @@ proc allowed(msg: Message, config: WhisperConfig): bool =
     return false
 
   if msg.pow < config.powRequirement:
-    warn "too low PoW envelope", pow = msg.pow, minPow = config.powRequirement
+    warn "Message PoW too low", pow = msg.pow, minPow = config.powRequirement
     return false
 
   if not bloomFilterMatch(config.bloom, msg.bloom):
-    warn "received message does not match node bloomfilter"
+    warn "Message does not match node bloom filter"
     return false
 
   return true
@@ -598,13 +598,13 @@ proc notify(filters: var Table[string, Filter], msg: Message) =
 
    # When decoding is done we can check the src (signature)
    if filter.src.isSome():
-     var src: Option[PublicKey] = decoded.get().src
+     let src: Option[PublicKey] = decoded.get().src
      if not src.isSome():
        continue
      elif src.get() != filter.src.get():
        continue
 
-   var receivedMsg = ReceivedMessage(decoded: decoded.get(),
+   let receivedMsg = ReceivedMessage(decoded: decoded.get(),
                                      timestamp: msg.env.expiry - msg.env.ttl,
                                      ttl: msg.env.ttl,
                                      topic: msg.env.topic,
@@ -712,12 +712,12 @@ rlpxProtocol shh(version = whisperVersion,
     for envelope in envelopes:
       # check if expired or in future, or ttl not 0
       if not envelope.valid():
-        warn "expired or future timed envelope"
+        warn "Expired or future timed envelope"
         # disconnect from peers sending bad envelopes
         # await peer.disconnect(SubprotocolReason)
         continue
 
-      var msg = initMessage(envelope)
+      let msg = initMessage(envelope)
       if not msg.allowed(peer.networkState.config):
         # disconnect from peers sending bad envelopes
         # await peer.disconnect(SubprotocolReason)
@@ -754,7 +754,7 @@ rlpxProtocol shh(version = whisperVersion,
   proc p2pMessage(peer: Peer, envelope: Envelope) =
     if peer.state.trusted:
       # when trusted we can bypass any checks on envelope
-      var msg = Message(env: envelope, isP2P: true)
+      let msg = Message(env: envelope, isP2P: true)
       peer.networkState.filters.notify(msg)
 
 # 'Runner' calls ---------------------------------------------------------------
@@ -771,7 +771,7 @@ proc processQueue(peer: Peer) =
       continue
 
     if not bloomFilterMatch(peer.state(shh).bloom, message.bloom):
-      debug "Peer bloomfilter blocked message"
+      debug "Message does not match peer bloom filter"
       continue
 
     debug "Adding envelope"
@@ -825,7 +825,7 @@ proc sendMessage*(node: EthereumNode, env: var Envelope): bool =
 
   # We have to do the same checks here as in the messages proc not to leak
   # any information that the message originates from this node.
-  var msg = initMessage(env)
+  let msg = initMessage(env)
   if not msg.allowed(node.protocolState(shh).config):
     return false
 
@@ -840,10 +840,10 @@ proc sendMessage*(node: EthereumNode, env: var Envelope): bool =
 proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
                   symKey = none[SymKey](), src = none[PrivateKey](),
                   ttl: uint32, topic: Topic, payload: Bytes,
-                  padding = none[Bytes](), powTime = 1,
+                  padding = none[Bytes](), powTime = 1'f,
                   targetPeer = none[NodeId]()): bool =
   # NOTE: Allow a post without a key? Encryption is mandatory in v6?
-  var payload = encode(Payload(payload: payload, src: src, dst: pubKey,
+  let payload = encode(Payload(payload: payload, src: src, dst: pubKey,
                                symKey: symKey, padding: padding))
   if payload.isSome():
     var env = Envelope(expiry:epochTime().uint32 + ttl + powTime.uint32,
@@ -857,7 +857,7 @@ proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
       # In its current blocking state, it could be noticed by a peer that no
       # messages are send for a while, and thus that mining PoW is done, and that
       # next messages contains a message originated from this peer
-      env.nonce = env.minePow(powTime.float)
+      env.nonce = env.minePow(powTime)
       return node.sendMessage(env)
     else:
       error "Light node not allowed to post messages"
@@ -870,7 +870,7 @@ proc subscribeFilter*(node: EthereumNode, filter: Filter,
                       handler = none[FilterMsgHandler]()): string =
   # NOTE: Should we allow a filter without a key? Encryption is mandatory in v6?
   # Check if asymmetric _and_ symmetric key? Now asymmetric just has precedence.
-  var id = generateRandomID()
+  let id = generateRandomID()
   var filter = filter
   if handler.isSome():
     filter.handler = handler
