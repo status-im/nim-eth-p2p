@@ -1249,6 +1249,8 @@ template baseProtocolVersion(peer: Peer): uint =
     devp2pVersion
 
 proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
+  initTracing(devp2p, rlpxProtocols)
+
   new result
   result.network = node
   result.remote = remote
@@ -1321,6 +1323,8 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
 
 proc rlpxAccept*(node: EthereumNode,
                  transport: StreamTransport): Future[Peer] {.async.} =
+  initTracing(devp2p, rlpxProtocols)
+
   new result
   result.transport = transport
   result.network = node

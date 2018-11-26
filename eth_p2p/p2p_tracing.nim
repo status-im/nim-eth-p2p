@@ -1,6 +1,7 @@
 import
   macros,
-  chronicles, serialization, serialization/streams, json_serialization/writer,
+  serialization, json_serialization/writer,
+  chronicles, chronicles_tail/configuration,
   private/types
 
 export
@@ -17,6 +18,30 @@ const tracingEnabled* = defined(p2pdump)
 
 when tracingEnabled:
   logStream p2pMessages[json[file(p2p_messages.json,truncate)]]
+  p2pMessages.useTailPlugin "p2p_tracing_ctail_plugin.nim"
+
+  template logRecord(eventName: static[string], args: varargs[untyped]) =
+    p2pMessages.log LogLevel.NONE, eventName, topics = "p2pdump", args
+
+  proc initTracing*(baseProtocol: ProtocolInfo,
+                    userProtocols: seq[ProtocolInfo]) =
+    once:
+      var w = init StringJsonWriter
+
+      proc addProtocol(p: ProtocolInfo) =
+        w.writeFieldName p.name
+        w.beginRecord()
+        for msg in p.messages:
+          w.writeField $msg.id, msg.name
+        w.endRecordField()
+
+      w.beginRecord()
+      addProtocol baseProtocol
+      for userProtocol in userProtocols:
+        addProtocol userProtocol
+      w.endRecord()
+
+      logRecord "p2p_protocols", data = JsonString(w.getOutput)
 
   proc logMsgEventImpl(eventName: static[string],
                        peer: Peer,
@@ -24,10 +49,10 @@ when tracingEnabled:
                        msgId: int,
                        json: string) =
     # this is kept as a separate proc to reduce the code bloat
-    p2pMessages.log LogLevel.NONE, eventName, port = int(peer.network.address.tcpPort),
-                                              peer = $peer.remote,
-                                              protocol = protocol.name,
-                                              msgId, data = JsonString(json)
+    logRecord eventName, port = int(peer.network.address.tcpPort),
+                         peer = $peer.remote,
+                         protocol = protocol.name,
+                         msgId, data = JsonString(json)
 
   proc logMsgEvent[Msg](eventName: static[string], peer: Peer, msg: Msg) =
     mixin msgProtocol, protocolInfo, msgId
@@ -54,7 +79,8 @@ when tracingEnabled:
 
     result.add quote do:
       endRecord(`tracer`)
-      logMsgEventImpl("outgoing_msg", `peer`, `protocolInfo`, `msgId`, getOutput(`tracer`))
+      logMsgEventImpl("outgoing_msg", `peer`,
+                      `protocolInfo`, `msgId`, getOutput(`tracer`))
 
   template logSentMsg*(peer: Peer, msg: auto) =
     logMsgEvent("outgoing_msg", peer, msg)
@@ -62,22 +88,24 @@ when tracingEnabled:
   template logReceivedMsg*(peer: Peer, msg: auto) =
     logMsgEvent("incoming_msg", peer, msg)
 
-  template logConnectedPeer*(peer: Peer) =
-    p2pMessages.log LogLevel.NONE, "peer_connected",
-                    port = int(peer.network.address.tcpPort),
-                    peer = $peer.remote
+  template logConnectedPeer*(p: Peer) =
+    logRecord "peer_connected",
+              port = int(p.network.address.tcpPort),
+              peer = $p.remote
 
-  template logAcceptedPeer*(peer: Peer) =
-    p2pMessages.log LogLevel.NONE, "peer_accepted",
-                    port = int(peer.network.address.tcpPort),
-                    peer = $peer.remote
+  template logAcceptedPeer*(p: Peer) =
+    logRecord "peer_accepted",
+              port = int(p.network.address.tcpPort),
+              peer = $p.remote
 
-  template logDisconnectedPeer*(peer: Peer) =
-    p2pMessages.log LogLevel.NONE, "peer_disconnected",
-                    port = int(peer.network.address.tcpPort),
-                    peer = $peer.remote
+  template logDisconnectedPeer*(p: Peer) =
+    logRecord "peer_disconnected",
+              port = int(p.network.address.tcpPort),
+              peer = $p.remote
 
 else:
+  template initTracing*(baseProtocol: ProtocolInfo,
+                        userProtocols: seq[ProtocolInfo])= discard
   template logSentMsg*(peer: Peer, msg: auto) = discard
   template logReceivedMsg*(peer: Peer, msg: auto) = discard
   template logConnectedPeer*(peer: Peer) = discard
