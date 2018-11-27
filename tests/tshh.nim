@@ -8,7 +8,7 @@
 #            MIT license (LICENSE-MIT)
 
 import
-  sequtils, options, unittest, times,
+  sequtils, options, unittest, times, tables,
   nimcrypto/hash,
   eth_keys, rlp,
   eth_p2p/rlpx_protocols/shh_protocol as shh
@@ -274,3 +274,95 @@ suite "Whisper queue":
   test "check field order against expected rlp order":
     check rlp.encode(env0) ==
       rlp.encodeList(env0.expiry, env0.ttl, env0.topic, env0.data, env0.nonce)
+
+# To test filters we do not care if the msg is valid or allowed
+proc prepFilterTestMsg(pubKey = none[PublicKey](), symKey = none[SymKey](),
+                       src = none[PrivateKey](), topic: Topic): Message =
+    let payload = Payload(dst: pubKey, symKey: symKey, src: src,
+                          payload: @[byte 0, 1, 2])
+    let encoded = shh.encode(payload)
+    let env = Envelope(expiry: 1, ttl: 1, topic: topic, data: encoded.get(),
+                       nonce: 0)
+    result = initMessage(env)
+
+suite "Whisper filter":
+  test "should notify filter on message with symmetric encryption":
+    var symKey: SymKey
+    let topic = [byte 0, 0, 0, 0]
+    let msg = prepFilterTestMsg(symKey = some(symKey), topic = topic)
+
+    var filters = initTable[string, Filter]()
+    let filter = newFilter(symKey = some(symKey), topics = @[topic])
+    let filterId = filters.subscribeFilter(filter)
+
+    notify(filters, msg)
+
+    let messages = filters.getFilterMessages(filterId)
+    check messages.len == 1
+
+  test "should notify filter on message with asymmetric encryption":
+    let privKey = eth_keys.newPrivateKey()
+    let topic = [byte 0, 0, 0, 0]
+    let msg = prepFilterTestMsg(pubKey = some(privKey.getPublicKey()),
+                                topic = topic)
+
+    var filters = initTable[string, Filter]()
+    let filter = newFilter(privateKey = some(privKey), topics = @[topic])
+    let filterId = filters.subscribeFilter(filter)
+
+    notify(filters, msg)
+
+    let messages = filters.getFilterMessages(filterId)
+    check messages.len == 1
+
+  test "should notify filter on message with signature":
+    let privKey = eth_keys.newPrivateKey()
+    let topic = [byte 0, 0, 0, 0]
+    let msg = prepFilterTestMsg(src = some(privKey), topic = topic)
+
+    var filters = initTable[string, Filter]()
+    let filter = newFilter(src = some(privKey.getPublicKey()),
+                           topics = @[topic])
+    let filterId = filters.subscribeFilter(filter)
+
+    notify(filters, msg)
+
+    let messages = filters.getFilterMessages(filterId)
+    check messages.len == 1
+
+  test "test notify of filter against PoW requirement":
+    let topic = [byte 0, 0, 0, 0]
+    # this message has a PoW of 0.02962962962962963, number should be updated
+    # in case PoW algorithm changes
+    let msg = prepFilterTestMsg(topic = topic)
+
+    var filters = initTable[string, Filter]()
+    let
+      filterId1 = filters.subscribeFilter(
+                    newFilter(topics = @[topic], powReq = 0.02962962962962963))
+      filterId2 = filters.subscribeFilter(
+                    newFilter(topics = @[topic], powReq = 0.02962962962962964))
+
+    notify(filters, msg)
+
+    check:
+      filters.getFilterMessages(filterId1).len == 1
+      filters.getFilterMessages(filterId2).len == 0
+
+  test "test notify of filter on message with certain topic":
+    let
+      topic1 = [byte 0xAB, 0x12, 0xCD, 0x34]
+      topic2 = [byte 0, 0, 0, 0]
+
+    let msg = prepFilterTestMsg(topic = topic1)
+
+    var filters = initTable[string, Filter]()
+    let
+      filterId1 = filters.subscribeFilter(newFilter(topics = @[topic1]))
+      filterId2 = filters.subscribeFilter(newFilter(topics = @[topic2]))
+
+    notify(filters, msg)
+
+    check:
+      filters.getFilterMessages(filterId1).len == 1
+      filters.getFilterMessages(filterId2).len == 0
