@@ -36,9 +36,9 @@ const
   maxHeadersFetch* = 192
   protocolVersion* = 63
 
-rlpxProtocol eth(version = protocolVersion,
-                 peerState = PeerState,
-                 useRequestIds = false):
+p2pProtocol eth(version = protocolVersion,
+                peerState = PeerState,
+                useRequestIds = false):
 
   onPeerConnected do (peer: Peer):
     let

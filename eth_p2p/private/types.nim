@@ -18,8 +18,8 @@ type
     peerPool*: PeerPool
 
     # Private fields:
-    rlpxCapabilities*: seq[Capability]
-    rlpxProtocols*: seq[ProtocolInfo]
+    capabilities*: seq[Capability]
+    protocols*: seq[ProtocolInfo]
     listeningServer*: StreamServer
     protocolStates*: seq[RootRef]
     discovery*: DiscoveryProtocol

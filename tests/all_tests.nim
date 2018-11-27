@@ -1,4 +1,4 @@
 import
-  testecies, testauth, testcrypt,
+  testecies, testauth, testcrypt, tshh,
   les/test_flow_control
 

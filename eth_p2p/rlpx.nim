@@ -30,12 +30,12 @@ when tracingEnabled:
 var
   gProtocols: seq[ProtocolInfo]
   gDispatchers = initSet[Dispatcher]()
-  devp2p: ProtocolInfo
+  gDevp2pInfo: ProtocolInfo
 
 # The variables above are immutable RTTI information. We need to tell
 # Nim to not consider them GcSafe violations:
-template rlpxProtocols*: auto = {.gcsafe.}: gProtocols
-template devp2pProtocolInfo: auto = {.gcsafe.}: devp2p
+template allProtocols*: auto = {.gcsafe.}: gProtocols
+template devp2pInfo: auto = {.gcsafe.}: gDevp2pInfo
 
 proc newFuture[T](location: var Future[T]) =
   location = newFuture[T]()
@@ -82,12 +82,12 @@ proc getDispatcher(node: EthereumNode,
   # We should be able to find an existing dispatcher without allocating a new one
 
   new(result)
-  newSeq(result.protocolOffsets, rlpxProtocols.len)
+  newSeq(result.protocolOffsets, allProtocols.len)
   result.protocolOffsets.fill -1
 
   var nextUserMsgId = 0x10
 
-  for localProtocol in node.rlpxProtocols:
+  for localProtocol in node.protocols:
     let idx = localProtocol.index
     block findMatchingProtocol:
       for remoteCapability in otherPeerCapabilities:
@@ -105,9 +105,9 @@ proc getDispatcher(node: EthereumNode,
         dest[index + i] = addr src[i]
 
     result.messages = newSeq[ptr MessageInfo](nextUserMsgId)
-    devp2pProtocolInfo.messages.copyTo(result.messages, 0)
+    devp2pInfo.messages.copyTo(result.messages, 0)
 
-    for localProtocol in node.rlpxProtocols:
+    for localProtocol in node.protocols:
       let idx = localProtocol.index
       if result.protocolOffsets[idx] != -1:
         result.activeProtocols.add localProtocol
@@ -131,15 +131,15 @@ proc getMsgName*(peer: Peer, msgId: int): string =
 proc getMsgMetadata*(peer: Peer, msgId: int): (ProtocolInfo, ptr MessageInfo) =
   doAssert msgId >= 0
 
-  if msgId <= devp2p.messages[^1].id:
-    return (devp2p, addr devp2p.messages[msgId])
+  if msgId <= devp2pInfo.messages[^1].id:
+    return (devp2pInfo, addr devp2pInfo.messages[msgId])
 
   if msgId < peer.dispatcher.messages.len:
-    for i in 0 ..< rlpxProtocols.len:
+    for i in 0 ..< allProtocols.len:
       let offset = peer.dispatcher.protocolOffsets[i]
       if offset != -1 and
-         offset + rlpxProtocols[i].messages[^1].id >= msgId:
-        return (rlpxProtocols[i], peer.dispatcher.messages[msgId])
+         offset + allProtocols[i].messages[^1].id >= msgId:
+        return (allProtocols[i], peer.dispatcher.messages[msgId])
 
 # Protocol info objects
 #
@@ -229,7 +229,7 @@ proc registerProtocol(protocol: ProtocolInfo) =
     for i in 0 ..< gProtocols.len:
       gProtocols[i].index = i
   else:
-    devp2p = protocol
+    gDevp2pInfo = protocol
 
 # Message composition and encryption
 #
@@ -592,19 +592,19 @@ proc verifyStateType(t: NimNode): NimNode =
   if result.kind != nnkBracketExpr or $result[0] != "ref":
     macros.error($result & " must be a ref type")
 
-macro rlpxProtocolImpl(name: static[string],
-                       version: static[uint],
-                       body: untyped,
-                       useRequestIds: static[bool] = true,
-                       timeout: static[int] = defaultReqTimeout,
-                       shortName: static[string] = "",
-                       outgoingRequestDecorator: untyped = nil,
-                       incomingRequestDecorator: untyped = nil,
-                       incomingRequestThunkDecorator: untyped = nil,
-                       incomingResponseDecorator: untyped = nil,
-                       incomingResponseThunkDecorator: untyped = nil,
-                       peerState = type(nil),
-                       networkState = type(nil)): untyped =
+macro p2pProtocolImpl(name: static[string],
+                      version: static[uint],
+                      body: untyped,
+                      useRequestIds: static[bool] = true,
+                      timeout: static[int] = defaultReqTimeout,
+                      shortName: static[string] = "",
+                      outgoingRequestDecorator: untyped = nil,
+                      incomingRequestDecorator: untyped = nil,
+                      incomingRequestThunkDecorator: untyped = nil,
+                      incomingResponseDecorator: untyped = nil,
+                      incomingResponseThunkDecorator: untyped = nil,
+                      peerState = type(nil),
+                      networkState = type(nil)): untyped =
   ## The macro used to defined RLPx sub-protocols. See README.
   var
     # XXX: deal with a Nim bug causing the macro params to be
@@ -628,6 +628,7 @@ macro rlpxProtocolImpl(name: static[string],
     protoNameIdent = ident(protoName)
     resultIdent = ident "result"
     perProtocolMsgId = ident"perProtocolMsgId"
+    currentProtocolSym = ident"CurrentProtocol"
     protocol = ident(protoName & "Protocol")
     isSubprotocol = version > 0'u
     peerState = verifyStateType peerState.getType
@@ -686,6 +687,9 @@ macro rlpxProtocolImpl(name: static[string],
       param[^2] = chooseFieldType(param[^2])
 
     var userHandlerDefinitions = newStmtList()
+
+    userHandlerDefinitions.add quote do:
+      type `currentProtocolSym` = `protoNameIdent`
 
     if msgId >= 0:
       userHandlerDefinitions.add quote do:
@@ -1080,10 +1084,10 @@ macro rlpxProtocolImpl(name: static[string],
   when defined(debugRlpxProtocol) or defined(debugMacros):
     echo repr(result)
 
-macro rlpxProtocol*(protocolOptions: untyped, body: untyped): untyped =
+macro p2pProtocol*(protocolOptions: untyped, body: untyped): untyped =
   let protoName = $(protocolOptions[0])
   result = protocolOptions
-  result[0] = bindSym"rlpxProtocolImpl"
+  result[0] = bindSym"p2pProtocolImpl"
   result.add(newTree(nnkExprEqExpr,
                      ident("name"),
                      newLit(protoName)))
@@ -1091,7 +1095,7 @@ macro rlpxProtocol*(protocolOptions: untyped, body: untyped): untyped =
                      ident("body"),
                      body))
 
-rlpxProtocol p2p(version = 0):
+p2pProtocol devp2p(version = 0, shortName = "p2p"):
   proc hello(peer: Peer,
              version: uint,
              clientId: string,
@@ -1120,13 +1124,37 @@ proc removePeer(network: EthereumNode, peer: Peer) =
         observer.onPeerDisconnected(peer)
 
 proc callDisconnectHandlers(peer: Peer, reason: DisconnectionReason): Future[void] =
-  var futures = newSeqOfCap[Future[void]](rlpxProtocols.len)
+  var futures = newSeqOfCap[Future[void]](allProtocols.len)
 
   for protocol in peer.dispatcher.activeProtocols:
     if protocol.disconnectHandler != nil:
       futures.add((protocol.disconnectHandler)(peer, reason))
 
   return all(futures)
+
+proc handshakeImpl(peer: Peer,
+                   handshakeSendFut: Future[void],
+                   timeout: int,
+                   HandshakeType: type): Future[HandshakeType] {.async.} =
+  asyncCheck handshakeSendFut
+  var response = nextMsg(peer, HandshakeType)
+  if timeout > 0:
+    await response or sleepAsync(timeout)
+    if not response.finished:
+      discard disconnectAndRaise(peer, BreachOfProtocol,
+                                 "sub-protocol handshake was not received in time.")
+  else:
+    discard await response
+  return response.read
+
+macro handshake*(peer: Peer, timeout = 0, sendCall: untyped): untyped =
+  let
+    msgName = $sendCall[0]
+    msgType = newDotExpr(ident"CurrentProtocol", ident(msgName))
+
+  sendCall.insert(1, peer)
+
+  result = newCall(bindSym"handshakeImpl", peer, sendCall, timeout, msgType)
 
 proc disconnect*(peer: Peer, reason: DisconnectionReason, notifyOtherPeer = true) {.async.} =
   if peer.connectionState notin {Disconnecting, Disconnected}:
@@ -1142,7 +1170,7 @@ proc disconnect*(peer: Peer, reason: DisconnectionReason, notifyOtherPeer = true
       peer.connectionState = Disconnected
       removePeer(peer.network, peer)
 
-proc validatePubKeyInHello(msg: p2p.hello, pubKey: PublicKey): bool =
+proc validatePubKeyInHello(msg: devp2p.hello, pubKey: PublicKey): bool =
   var pk: PublicKey
   recoverPublicKey(msg.nodeId, pk) == EthKeysStatus.Success and pk == pubKey
 
@@ -1170,13 +1198,13 @@ proc initPeerState*(peer: Peer, capabilities: openarray[Capability]) =
   peer.lastReqId = 0
 
   # Initialize all the active protocol states
-  newSeq(peer.protocolStates, rlpxProtocols.len)
+  newSeq(peer.protocolStates, allProtocols.len)
   for protocol in peer.dispatcher.activeProtocols:
     let peerStateInit = protocol.peerStateInitializer
     if peerStateInit != nil:
       peer.protocolStates[protocol.index] = peerStateInit(peer)
 
-proc postHelloSteps(peer: Peer, h: p2p.hello) {.async.} =
+proc postHelloSteps(peer: Peer, h: devp2p.hello) {.async.} =
   initPeerState(peer, h.capabilities)
 
   # Please note that the ordering of operations here is important!
@@ -1185,7 +1213,7 @@ proc postHelloSteps(peer: Peer, h: p2p.hello) {.async.} =
   # chance to send any initial packages they might require over
   # the network and to yield on their `nextMsg` waits.
   #
-  var subProtocolsHandshakes = newSeqOfCap[Future[void]](rlpxProtocols.len)
+  var subProtocolsHandshakes = newSeqOfCap[Future[void]](allProtocols.len)
   for protocol in peer.dispatcher.activeProtocols:
     if protocol.handshake != nil:
       subProtocolsHandshakes.add((protocol.handshake)(peer))
@@ -1249,7 +1277,7 @@ template baseProtocolVersion(peer: Peer): uint =
     devp2pVersion
 
 proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
-  initTracing(devp2p, rlpxProtocols)
+  initTracing(devp2pInfo, node.protocols)
 
   new result
   result.network = node
@@ -1289,11 +1317,11 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
     logConnectedPeer result
     asyncCheck result.hello(handshake.getVersion(),
                             node.clientId,
-                            node.rlpxCapabilities,
+                            node.capabilities,
                             uint(node.address.tcpPort),
                             node.keys.pubkey.getRaw())
 
-    var response = await result.waitSingleMsg(p2p.hello)
+    var response = await result.waitSingleMsg(devp2p.hello)
 
     if not validatePubKeyInHello(response, remote.node.pubKey):
       warn "Remote nodeId is not its public key" # XXX: Do we care?
@@ -1323,7 +1351,7 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
 
 proc rlpxAccept*(node: EthereumNode,
                  transport: StreamTransport): Future[Peer] {.async.} =
-  initTracing(devp2p, rlpxProtocols)
+  initTracing(devp2pInfo, node.protocols)
 
   new result
   result.transport = transport
@@ -1360,10 +1388,10 @@ proc rlpxAccept*(node: EthereumNode,
 
     logAcceptedPeer result
     await result.hello(result.baseProtocolVersion, node.clientId,
-                       node.rlpxCapabilities, listenPort.uint,
+                       node.capabilities, listenPort.uint,
                        node.keys.pubkey.getRaw())
 
-    var response = await result.waitSingleMsg(p2p.hello)
+    var response = await result.waitSingleMsg(devp2p.hello)
     if not validatePubKeyInHello(response, handshake.remoteHPubkey):
       warn "A Remote nodeId is not its public key" # XXX: Do we care?
 

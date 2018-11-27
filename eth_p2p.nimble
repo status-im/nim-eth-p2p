@@ -27,8 +27,10 @@ proc runTest(name: string, defs = "", lang = "c") =
   exec "nim " & lang & " " & defs & " -d:testing --experimental:ForLoopMacros -r tests/" & name
 
 task test, "Runs the test suite":
+  runTest "all_tests"
   runTest "testenode"
   runTest "tdiscovery"
   runTest "tserver"
   runTest "tserver", "-d:useSnappy"
-  runTest "all_tests"
+  # runTest "tshh_connect"
+  runTest "tshh_connect_mocked"

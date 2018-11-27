@@ -34,10 +34,10 @@ Options:
     "enode://1118980bf48b0a3640bdba04e0fe78b1add18e1cd99bf22d53daac1fd9972ad650df52176e7c7d89d1114cfef2bc23a2959aa54998a46afcf7d91809f0855082@52.74.57.123:30303",
     "enode://979b7fa28feeb35a4741660a16076f1943202cb72b6af70d327f053e248bab9ba81760f39d0701ef1d8f89cc1fbd2cacba0710a12cd5314d5e0c9021aa3637f9@5.1.83.226:30303",
   ]
-  # shh nodes taken from:
+  # Whisper nodes taken from:
   # https://github.com/status-im/status-react/blob/80aa0e92864c638777a45c3f2aeb66c3ae7c0b2e/resources/config/fleets.json
   # These are probably not on the main network?
-  ShhNodes = [
+  WhisperNodes = [
     "enode://66ba15600cda86009689354c3a77bdf1a97f4f4fb3ab50ffe34dbc904fac561040496828397be18d9744c75881ffc6ac53729ddbd2cdbdadc5f45c400e2622f7@206.189.243.176:30305",
     "enode://0440117a5bc67c2908fad94ba29c7b7f2c1536e96a9df950f3265a9566bf3a7306ea8ab5a1f9794a0a641dcb1e4951ce7c093c61c0d255f4ed5d2ed02c8fce23@35.224.15.65:30305",
     "enode://a80eb084f6bf3f98bf6a492fd6ba3db636986b17643695f67f543115d93d69920fb72e349e0c617a01544764f09375bb85f452b9c750a892d01d0e627d9c251e@47.89.16.125:30305",
@@ -115,7 +115,7 @@ else:
 
 let keys = newKeyPair()
 var node = newEthereumNode(keys, address, netId, nil, addAllCapabilities = false)
-node.addCapability shh
+node.addCapability Whisper
 
 # lets prepare some prearranged keypairs
 let encPrivateKey = initPrivateKey("5dc5381cae54ba3174dc0d46040fe11614d0cc94d41185922585198b4fcef9d3")
@@ -136,11 +136,11 @@ if config.main:
 
   asyncCheck node.connectToNetwork(bootnodes, true, true)
   # main network has mostly non SHH nodes, so we connect directly to SHH nodes
-  for nodeId in ShhNodes:
-    var shhENode: ENode
-    discard initENode(nodeId, shhENode)
-    var shhNode = newNode(shhENode)
-    asyncCheck node.peerPool.connectToNode(shhNode)
+  for nodeId in WhisperNodes:
+    var whisperENode: ENode
+    discard initENode(nodeId, whisperENode)
+    var whisperNode = newNode(whisperENode)
+    asyncCheck node.peerPool.connectToNode(whisperNode)
 else:
   var bootENode: ENode
   discard initENode(DockerBootNode, bootENode)

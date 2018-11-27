@@ -18,14 +18,18 @@ import
 export
   types, rlpx, enode, kademlia
 
-proc addCapability*(n: var EthereumNode, p: ProtocolInfo) =
-  assert n.connectionState == ConnectionState.None
-  let pos = lowerBound(n.rlpxProtocols, p, rlpx.cmp)
-  n.rlpxProtocols.insert(p, pos)
-  n.rlpxCapabilities.insert(p.asCapability, pos)
+proc addCapability*(node: var EthereumNode, p: ProtocolInfo) =
+  assert node.connectionState == ConnectionState.None
 
-template addCapability*(n: var EthereumNode, Protocol: type) =
-  addCapability(n, Protocol.protocolInfo)
+  let pos = lowerBound(node.protocols, p, rlpx.cmp)
+  node.protocols.insert(p, pos)
+  node.capabilities.insert(p.asCapability, pos)
+
+  if p.networkStateInitializer != nil:
+    node.protocolStates[p.index] = p.networkStateInitializer(node)
+
+template addCapability*(node: var EthereumNode, Protocol: type) =
+  addCapability(node, Protocol.protocolInfo)
 
 proc newEthereumNode*(keys: KeyPair,
                       address: Address,
@@ -38,8 +42,8 @@ proc newEthereumNode*(keys: KeyPair,
   result.keys = keys
   result.networkId = networkId
   result.clientId = clientId
-  result.rlpxProtocols.newSeq 0
-  result.rlpxCapabilities.newSeq 0
+  result.protocols.newSeq 0
+  result.capabilities.newSeq 0
   result.address = address
   result.connectionState = ConnectionState.None
 
@@ -47,8 +51,10 @@ proc newEthereumNode*(keys: KeyPair,
     result.protocolVersion = if useCompression: devp2pSnappyVersion
                              else: devp2pVersion
 
+  result.protocolStates.newSeq allProtocols.len
+
   if addAllCapabilities:
-    for p in rlpxProtocols:
+    for p in allProtocols:
       result.addCapability(p)
 
 proc processIncoming(server: StreamServer,
@@ -76,13 +82,6 @@ proc startListening*(node: EthereumNode) =
                                               udata = cast[pointer](node))
   node.listeningServer.start()
 
-proc initProtocolStates*(node: EthereumNode) =
-  # TODO: This should be moved to a private module
-  node.protocolStates.newSeq(rlpxProtocols.len)
-  for p in node.rlpxProtocols:
-    if p.networkStateInitializer != nil:
-      node.protocolStates[p.index] = ((p.networkStateInitializer)(node))
-
 proc connectToNetwork*(node: EthereumNode,
                        bootstrapNodes: seq[ENode],
                        startListening = true,
@@ -100,8 +99,6 @@ proc connectToNetwork*(node: EthereumNode,
 
   if startListening:
     eth_p2p.startListening(node)
-
-  node.initProtocolStates()
 
   if startListening:
     node.listeningServer.start()
@@ -128,6 +125,11 @@ iterator peers*(node: EthereumNode): Peer =
 iterator peers*(node: EthereumNode, Protocol: type): Peer =
   for peer in node.peerPool.peers(Protocol):
     yield peer
+
+iterator protocolPeers*(node: EthereumNode, Protocol: type): auto =
+  mixin state
+  for peer in node.peerPool.peers(Protocol):
+    yield peer.state(Protocol)
 
 iterator randomPeers*(node: EthereumNode, maxPeers: int): Peer =
   # TODO: this can be implemented more efficiently

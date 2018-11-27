@@ -72,7 +72,7 @@ proc newEthereumNode*(keys: KeyPair,
   ```
 
   Each supplied protocol identifier is a name of a protocol introduced
-  by the `rlpxProtocol` macro discussed later in this document.
+  by the `p2pProtocol` macro discussed later in this document.
 
 Instantiating an `EthereumNode` does not immediately connect you to
 the network. To start the connection process, call `node.connectToNetwork`:
@@ -108,13 +108,13 @@ the definition of a RLPx protocol:
 
 ### RLPx sub-protocols
 
-The sub-protocols are defined with the `rlpxProtocol` macro. It will accept
+The sub-protocols are defined with the `p2pProtocol` macro. It will accept
 a 3-letter identifier for the protocol and the current protocol version:
 
 Here is how the [DevP2P wire protocol](https://github.com/ethereum/wiki/wiki/%C3%90%CE%9EVp2p-Wire-Protocol) might look like:
 
 ``` nim
-rlpxProtocol p2p(version = 0):
+p2pProtocol p2p(version = 0):
   proc hello(peer: Peer,
              version: uint,
              clientId: string,
@@ -148,8 +148,8 @@ though the `state` pseudo-field of the `Peer` object:
 type AbcPeerState = object
   receivedMsgsCount: int
 
-rlpxProtocol abc(version = 1,
-                 peerState = AbcPeerState):
+p2pProtocol abc(version = 1,
+                peerState = AbcPeerState):
 
   proc incomingMessage(p: Peer) =
     p.state.receivedMsgsCount += 1
@@ -202,7 +202,7 @@ proc handshakeExample(peer: Peer) {.async.} =
 
 There are few things to note in the above example:
 
-1. The `rlpxProtocol` definition created a pseudo-variable named after the
+1. The `p2pProtocol` definition created a pseudo-variable named after the
    protocol holding various properties of the protocol.
 
 2. Each message defined in the protocol received a corresponding type name,
@@ -220,7 +220,7 @@ be dispatched to their respective handlers.
 ### `requestResponse` pairs
 
 ``` nim
-rlpxProtocol les, 2:
+p2pProtocol les(version = 2):
   ...
 
   requestResponse:
@@ -242,9 +242,9 @@ be specified for each individual call and the default value can be
 overridden on the level of individual message, or the entire protocol:
 
 ``` nim
-rlpxProtocol abc(version = 1,
-                 useRequestIds = false,
-                 timeout = 5000): # value in milliseconds
+p2pProtocol abc(version = 1,
+                useRequestIds = false,
+                timeout = 5000): # value in milliseconds
   requestResponse:
     proc myReq(dataId: int, timeout = 3000)
     proc myRes(data: string)
@@ -262,7 +262,7 @@ also include handlers for certain important events such as newly connected
 peers or misbehaving or disconnecting peers:
 
 ``` nim
-rlpxProtocol les(version = 2):
+p2pProtocol les(version = 2):
   onPeerConnected do (peer: Peer):
     asyncCheck peer.status [
       "networkId": rlp.encode(1),

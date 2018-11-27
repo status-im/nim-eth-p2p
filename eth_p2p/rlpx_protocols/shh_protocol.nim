@@ -647,7 +647,7 @@ proc toBloom*(filters: Filters): Bloom =
       result = result or filter.bloom
 
 type
-  PeerState = ref object
+  WhisperPeer = ref object
     initialized*: bool # when successfully completed the handshake
     powRequirement*: float64
     bloom*: Bloom
@@ -656,15 +656,15 @@ type
     received: HashSet[Message]
     running*: bool
 
-  WhisperState = ref object
+  WhisperNetwork = ref object
     queue*: Queue
     filters*: Filters
     config*: WhisperConfig
 
 proc run(peer: Peer) {.async.}
-proc run(node: EthereumNode, network: WhisperState) {.async.}
+proc run(node: EthereumNode, network: WhisperNetwork) {.async.}
 
-proc initProtocolState*(network: var WhisperState, node: EthereumNode) =
+proc initProtocolState*(network: var WhisperNetwork, node: EthereumNode) =
   network.queue = initQueue(defaultQueueCapacity)
   network.filters = initTable[string, Filter]()
   network.config.bloom = fullBloom()
@@ -673,53 +673,47 @@ proc initProtocolState*(network: var WhisperState, node: EthereumNode) =
   network.config.maxMsgSize = defaultMaxMsgSize
   asyncCheck node.run(network)
 
-rlpxProtocol shh(version = whisperVersion,
-                 peerState = PeerState,
-                 networkState = WhisperState):
+p2pProtocol Whisper(version = whisperVersion,
+                    shortName = "shh",
+                    peerState = WhisperPeer,
+                    networkState = WhisperNetwork):
 
   onPeerConnected do (peer: Peer):
     debug "onPeerConnected Whisper"
     let
-      shhNetwork = peer.networkState
-      shhPeer = peer.state
+      whisperNet = peer.networkState
+      whisperPeer = peer.state
 
-    asyncCheck peer.status(whisperVersion,
-                           cast[uint](shhNetwork.config.powRequirement),
-                           @(shhNetwork.config.bloom),
-                           shhNetwork.config.isLightNode)
-
-    var f = peer.nextMsg(shh.status)
-    # When the peer does not respond with status within 500 ms we disconnect
-    await f or sleepAsync(500)
-    if not f.finished:
-      raise newException(UselessPeerError, "No status message received")
-
-    let m = f.read()
+    let m = await handshake(peer, timeout = 500,
+                            status(whisperVersion,
+                                   cast[uint](whisperNet.config.powRequirement),
+                                   @(whisperNet.config.bloom),
+                                   whisperNet.config.isLightNode))
 
     if m.protocolVersion == whisperVersion:
       debug "Suitable Whisper peer", peer, whisperVersion
     else:
       raise newException(UselessPeerError, "Incompatible Whisper version")
 
-    shhPeer.powRequirement = cast[float64](m.powConverted)
+    whisperPeer.powRequirement = cast[float64](m.powConverted)
 
     if m.bloom.len > 0:
       if m.bloom.len != bloomSize:
         raise newException(UselessPeerError, "Bloomfilter size mismatch")
       else:
-        shhPeer.bloom.bytesCopy(m.bloom)
+        whisperPeer.bloom.bytesCopy(m.bloom)
     else:
       # If no bloom filter is send we allow all
-      shhPeer.bloom = fullBloom()
+      whisperPeer.bloom = fullBloom()
 
-    shhPeer.isLightNode = m.isLightNode
-    if shhPeer.isLightNode and shhNetwork.config.isLightNode:
+    whisperPeer.isLightNode = m.isLightNode
+    if whisperPeer.isLightNode and whisperNet.config.isLightNode:
       # No sense in connecting two light nodes so we disconnect
       raise newException(UselessPeerError, "Two light nodes connected")
 
-    shhPeer.received.init()
-    shhPeer.trusted = false
-    shhPeer.initialized = true
+    whisperPeer.received.init()
+    whisperPeer.trusted = false
+    whisperPeer.initialized = true
 
     asyncCheck peer.run()
     debug "Whisper peer initialized"
@@ -754,7 +748,7 @@ rlpxProtocol shh(version = whisperVersion,
         continue
 
       # This peer send it thus should not receive it again
-      peer.state(shh).received.incl(msg)
+      peer.state.received.incl(msg)
 
       if peer.networkState.queue.add(msg):
         # notify filters of this message
@@ -790,48 +784,59 @@ rlpxProtocol shh(version = whisperVersion,
 # 'Runner' calls ---------------------------------------------------------------
 
 proc processQueue(peer: Peer) =
-  var envelopes: seq[Envelope] = @[]
-  for message in peer.networkState(shh).queue.items:
-    if peer.state(shh).received.contains(message):
+  var
+    envelopes: seq[Envelope] = @[]
+    whisperPeer = peer.state(Whisper)
+    whisperNet = peer.networkState(Whisper)
+
+  for message in whisperNet.queue.items:
+    if whisperPeer.received.contains(message):
       # debug "message was already send to peer"
       continue
 
-    if message.pow < peer.state(shh).powRequirement:
+    if message.pow < whisperPeer.powRequirement:
       debug "Message PoW too low for peer"
       continue
 
-    if not bloomFilterMatch(peer.state(shh).bloom, message.bloom):
+    if not bloomFilterMatch(whisperPeer.bloom, message.bloom):
       debug "Message does not match peer bloom filter"
       continue
 
     debug "Adding envelope"
     envelopes.add(message.env)
-    peer.state(shh).received.incl(message)
+    whisperPeer.received.incl(message)
 
   debug "Sending envelopes", amount=envelopes.len
   # await peer.messages(envelopes)
   asyncCheck peer.messages(envelopes)
 
 proc run(peer: Peer) {.async.} =
-  peer.state(shh).running = true
-  while peer.state(shh).running:
-    if not peer.networkState(shh).config.isLightNode:
+  var
+    whisperPeer = peer.state(Whisper)
+    whisperNet = peer.networkState(Whisper)
+
+  whisperPeer.running = true
+  while whisperPeer.running:
+    # XXX: shouldn't this be outside of the loop?
+    # In case we are runinng a light node, we have nothing to do here?
+    if not whisperNet.config.isLightNode:
       peer.processQueue()
     await sleepAsync(300)
 
 proc pruneReceived(node: EthereumNode) =
   if node.peerPool != nil: # XXX: a bit dirty to need to check for this here ...
-    for peer in node.peers(shh):
-      if not peer.state(shh).initialized:
+    var whisperNet = node.protocolState(Whisper)
+
+    for peer in node.protocolPeers(Whisper):
+      if not peer.initialized:
         continue
 
       # NOTE: Perhaps alter the queue prune call to keep track of a HashSet
       # of pruned messages (as these should be smaller), and diff this with
       # the received sets.
-      peer.state(shh).received = intersection(peer.state(shh).received,
-                                              node.protocolState(shh).queue.itemHashes)
+      peer.received = intersection(peer.received, whisperNet.queue.itemHashes)
 
-proc run(node: EthereumNode, network: WhisperState) {.async.} =
+proc run(node: EthereumNode, network: WhisperNetwork) {.async.} =
   while true:
     # prune message queue every second
     # TTL unit is in seconds, so this should be sufficient?
@@ -844,7 +849,7 @@ proc run(node: EthereumNode, network: WhisperState) {.async.} =
 # Public EthereumNode calls ----------------------------------------------------
 
 proc sendP2PMessage*(node: EthereumNode, peerId: NodeId, env: Envelope): bool =
-  for peer in node.peers(shh):
+  for peer in node.peers(Whisper):
     if peer.remote.id == peerId:
       asyncCheck peer.p2pMessage(env)
       return true
@@ -853,17 +858,18 @@ proc sendMessage*(node: EthereumNode, env: var Envelope): bool =
   if not env.valid(): # actually just ttl !=0 is sufficient
     return false
 
+  var whisperNet = node.protocolState(Whisper)
   # We have to do the same checks here as in the messages proc not to leak
   # any information that the message originates from this node.
   let msg = initMessage(env)
-  if not msg.allowed(node.protocolState(shh).config):
+  if not msg.allowed(whisperNet.config):
     return false
 
   debug "Adding message to queue"
-  if node.protocolState(shh).queue.add(msg):
+  if whisperNet.queue.add(msg):
     # Also notify our own filters of the message we are sending,
     # e.g. msg from local Dapp to Dapp
-    node.protocolState(shh).filters.notify(msg)
+    whisperNet.filters.notify(msg)
 
   return true
 
@@ -882,11 +888,14 @@ proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
     # Allow lightnode to post only direct p2p messages
     if targetPeer.isSome():
       return node.sendP2PMessage(targetPeer.get(), env)
-    elif not node.protocolState(shh).config.isLightNode:
+    elif not node.protocolState(Whisper).config.isLightNode:
       # XXX: make this non blocking or not?
       # In its current blocking state, it could be noticed by a peer that no
-      # messages are send for a while, and thus that mining PoW is done, and that
-      # next messages contains a message originated from this peer
+      # messages are send for a while, and thus that mining PoW is done, and
+      # that next messages contains a message originated from this peer
+      # zah: It would be hard to execute this in a background thread at the
+      # moment. We'll need a way to send custom "tasks" to the async message
+      # loop (e.g. AD2 support for AsyncChannels).
       env.nonce = env.minePow(powTime)
       return node.sendMessage(env)
     else:
@@ -898,29 +907,29 @@ proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
 
 proc subscribeFilter*(node: EthereumNode, filter: Filter,
                       handler = none[FilterMsgHandler]()): string =
-  return node.protocolState(shh).filters.subscribeFilter(filter, handler)
+  return node.protocolState(Whisper).filters.subscribeFilter(filter, handler)
 
 proc unsubscribeFilter*(node: EthereumNode, filterId: string): bool =
   var filter: Filter
-  return node.protocolState(shh).filters.take(filterId, filter)
+  return node.protocolState(Whisper).filters.take(filterId, filter)
 
 proc getFilterMessages*(node: EthereumNode, filterId: string): seq[ReceivedMessage] =
-  return node.protocolState(shh).filters.getFilterMessages(filterId)
+  return node.protocolState(Whisper).filters.getFilterMessages(filterId)
 
 proc filtersToBloom*(node: EthereumNode): Bloom =
-  return node.protocolState(shh).filters.toBloom()
+  return node.protocolState(Whisper).filters.toBloom()
 
 proc setPowRequirement*(node: EthereumNode, powReq: float64) {.async.} =
   # NOTE: do we need a tolerance of old PoW for some time?
-  node.protocolState(shh).config.powRequirement = powReq
-  for peer in node.peers(shh):
+  node.protocolState(Whisper).config.powRequirement = powReq
+  for peer in node.peers(Whisper):
     # asyncCheck peer.powRequirement(cast[uint](powReq))
     await peer.powRequirement(cast[uint](powReq))
 
 proc setBloomFilter*(node: EthereumNode, bloom: Bloom) {.async.} =
   # NOTE: do we need a tolerance of old bloom filter for some time?
-  node.protocolState(shh).config.bloom = bloom
-  for peer in node.peers(shh):
+  node.protocolState(Whisper).config.bloom = bloom
+  for peer in node.peers(Whisper):
     # asyncCheck peer.bloomFilterExchange(@bloom)
     await peer.bloomFilterExchange(@bloom)
 
@@ -928,17 +937,21 @@ proc setMaxMessageSize*(node: EthereumNode, size: uint32): bool =
   if size > defaultMaxMsgSize:
     error "size > maxMsgSize"
     return false
-  node.protocolState(shh).config.maxMsgSize = size
+  node.protocolState(Whisper).config.maxMsgSize = size
   return true
 
 proc setPeerTrusted*(node: EthereumNode, peerId: NodeId): bool =
-  for peer in node.peers(shh):
+  for peer in node.peers(Whisper):
     if peer.remote.id == peerId:
-      peer.state(shh).trusted = true
+      peer.state(Whisper).trusted = true
       return true
 
 # XXX: should probably only be allowed before connection is made,
 # as there exists no message to communicate to peers that it is a light node
 # How to arrange that?
 proc setLightNode*(node: EthereumNode, isLightNode: bool) =
-  node.protocolState(shh).config.isLightNode = isLightNode
+  node.protocolState(Whisper).config.isLightNode = isLightNode
+
+proc configureWhisper*(node: EthereumNode, config: WhisperConfig) =
+  node.protocolState(Whisper).config = config
+

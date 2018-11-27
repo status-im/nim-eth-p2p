@@ -40,16 +40,16 @@ let
 var node1 = newEthereumNode(keys1, localAddress(30303), 1, nil,
                             addAllCapabilities = false,
                             useCompression = useCompression)
-node1.addCapability shh
+node1.addCapability Whisper
 
 var node2 = newEthereumNode(keys2, localAddress(30304), 1, nil,
                             addAllCapabilities = false,
                             useCompression = useCompression)
-node2.addCapability shh
+node2.addCapability Whisper
 
 template waitForEmptyQueues() =
-  while node1.protocolState(shh).queue.items.len != 0 or
-        node2.protocolState(shh).queue.items.len != 0: poll()
+  while node1.protocolState(Whisper).queue.items.len != 0 or
+        node2.protocolState(Whisper).queue.items.len != 0: poll()
 
 when not defined(directConnect):
   let bootENode = waitFor setupBootNode()
@@ -65,8 +65,6 @@ when not defined(directConnect):
       node1.peerPool.connectedNodes.len() == 1
       node2.peerPool.connectedNodes.len() == 1
 else: # XXX: tricky without peerPool
-  node1.initProtocolStates()
-  node2.initProtocolStates()
   node2.startListening()
   discard waitFor node1.rlpxConnect(newNode(initENode(node2.keys.pubKey,
                                                       node2.address)))
@@ -130,13 +128,13 @@ asyncTest "Filters with encryption and signing":
                                   src = some(signKeyPair.seckey), ttl = 2,
                                   topic = topic, payload = payloads[3])
 
-  check node2.protocolState(shh).queue.items.len == 4
+  check node2.protocolState(Whisper).queue.items.len == 4
 
   var f = all(futures)
   await f or sleepAsync(300)
   check:
     f.finished == true
-    node1.protocolState(shh).queue.items.len == 4
+    node1.protocolState(Whisper).queue.items.len == 4
 
   for filter in filters:
     check node1.unsubscribeFilter(filter) == true
@@ -166,7 +164,7 @@ asyncTest "Filters with topics":
   await f or sleepAsync(300)
   check:
     f.finished == true
-    node1.protocolState(shh).queue.items.len == 2
+    node1.protocolState(Whisper).queue.items.len == 2
 
     node1.unsubscribeFilter(filter1) == true
     node1.unsubscribeFilter(filter2) == true
@@ -197,7 +195,7 @@ asyncTest "Filters with PoW":
   check:
     futures[0].finished == true
     futures[1].finished == false
-    node1.protocolState(shh).queue.items.len == 1
+    node1.protocolState(Whisper).queue.items.len == 1
 
     node1.unsubscribeFilter(filter1) == true
     node1.unsubscribeFilter(filter2) == true
@@ -238,8 +236,8 @@ asyncTest "Bloomfilter blocking":
   await f or sleepAsync(300)
   check:
     f.finished == false
-    node1.protocolState(shh).queue.items.len == 0
-    node2.protocolState(shh).queue.items.len == 1
+    node1.protocolState(Whisper).queue.items.len == 0
+    node2.protocolState(Whisper).queue.items.len == 1
 
   f = newFuture[int]()
   waitForEmptyQueues()
@@ -250,8 +248,8 @@ asyncTest "Bloomfilter blocking":
   check:
     f.finished == true
     f.read() == 1
-    node1.protocolState(shh).queue.items.len == 1
-    node2.protocolState(shh).queue.items.len == 1
+    node1.protocolState(Whisper).queue.items.len == 1
+    node2.protocolState(Whisper).queue.items.len == 1
 
     node1.unsubscribeFilter(filter) == true
 
@@ -266,8 +264,8 @@ asyncTest "PoW blocking":
   check true == node2.postMessage(ttl = 1, topic = topic, payload = payload)
   await sleepAsync(300)
   check:
-    node1.protocolState(shh).queue.items.len == 0
-    node2.protocolState(shh).queue.items.len == 1
+    node1.protocolState(Whisper).queue.items.len == 0
+    node2.protocolState(Whisper).queue.items.len == 1
 
   waitForEmptyQueues()
 
@@ -275,8 +273,8 @@ asyncTest "PoW blocking":
   check true == node2.postMessage(ttl = 1, topic = topic, payload = payload)
   await sleepAsync(300)
   check:
-    node1.protocolState(shh).queue.items.len == 1
-    node2.protocolState(shh).queue.items.len == 1
+    node1.protocolState(Whisper).queue.items.len == 1
+    node2.protocolState(Whisper).queue.items.len == 1
 
   waitForEmptyQueues()
 
@@ -286,16 +284,16 @@ asyncTest "Queue pruning":
   for i in countdown(10, 1):
     check true == node2.postMessage(ttl = i.uint32, topic = topic,
                                     payload = payload)
-  check node2.protocolState(shh).queue.items.len == 10
+  check node2.protocolState(Whisper).queue.items.len == 10
 
   await sleepAsync(300)
   check:
-    node1.protocolState(shh).queue.items.len == 10
+    node1.protocolState(Whisper).queue.items.len == 10
 
   await sleepAsync(1000)
   check:
-    node1.protocolState(shh).queue.items.len == 0
-    node2.protocolState(shh).queue.items.len == 0
+    node1.protocolState(Whisper).queue.items.len == 0
+    node2.protocolState(Whisper).queue.items.len == 0
 
 asyncTest "Light node posting":
   let topic = [byte 0, 0, 0, 0]
@@ -304,7 +302,7 @@ asyncTest "Light node posting":
 
   check:
     result == false
-    node1.protocolState(shh).queue.items.len == 0
+    node1.protocolState(Whisper).queue.items.len == 0
 
   node1.setLightNode(false)
 
@@ -327,7 +325,7 @@ asyncTest "P2P":
   check:
     f.finished == true
     f.read() == 1
-    node1.protocolState(shh).queue.items.len == 0
-    node2.protocolState(shh).queue.items.len == 0
+    node1.protocolState(Whisper).queue.items.len == 0
+    node2.protocolState(Whisper).queue.items.len == 0
 
     node1.unsubscribeFilter(filter) == true

@@ -20,32 +20,30 @@ template asyncTest(name, body: untyped) =
     proc scenario {.async.} = body
     waitFor scenario()
 
-asyncTest "network with 3 peers using shh protocol":
+asyncTest "network with 3 peers using the Whisper protocol":
   const useCompression = defined(useSnappy)
   let localKeys = newKeyPair()
   let localAddress = localAddress(30303)
   var localNode = newEthereumNode(localKeys, localAddress, 1, nil,
                                   addAllCapabilities = false,
                                   useCompression = useCompression)
-  localNode.addCapability shh
-  localNode.initProtocolStates()
+  localNode.addCapability Whisper
   localNode.startListening()
 
   var mock1 = newMockPeer do (m: MockConf):
-    m.addHandshake shh.status(protocolVersion: whisperVersion, powConverted: 0,
-                              bloom: @[], isLightNode: false)
-    m.expect(shh.messages)
-
+    m.addHandshake Whisper.status(protocolVersion: whisperVersion, powConverted: 0,
+                                  bloom: @[], isLightNode: false)
+    m.expect Whisper.messages
 
   var mock2 = newMockPeer do (m: MockConf):
-    m.addHandshake shh.status(protocolVersion: whisperVersion,
-                              powConverted: cast[uint](0.1),
-                              bloom: @[], isLightNode: false)
-    m.expect(shh.messages)
+    m.addHandshake Whisper.status(protocolVersion: whisperVersion,
+                                  powConverted: cast[uint](0.1),
+                                  bloom: @[], isLightNode: false)
+    m.expect Whisper.messages
 
   var mock1Peer = await localNode.rlpxConnect(mock1)
   var mock2Peer = await localNode.rlpxConnect(mock2)
 
   check:
-    mock1Peer.state(shh).powRequirement == 0
-    mock2Peer.state(shh).powRequirement == 0.1
+    mock1Peer.state(Whisper).powRequirement == 0
+    mock2Peer.state(Whisper).powRequirement == 0.1

@@ -128,7 +128,7 @@ proc addHandshake*(mock: MockConf, msg: auto) =
   msgInfo.protocol = mock.addProtocol(msgInfo.protocol)
   let expectedMsg = ExpectedMsg(msg: msgInfo, response: reply(msg))
 
-  when msg is p2p.hello:
+  when msg is devp2p.hello:
     devp2pHandshake = expectedMsg
   else:
     mock.handshakes.add expectedMsg
@@ -200,7 +200,7 @@ proc newMockPeer*(userConfigurator: proc (m: MockConf)): EthereumNode =
       proc sendHello(p: Peer, data: Rlp) {.async.} =
         await p.hello(devp2pVersion,
                       mockConf.clientId,
-                      node.rlpxCapabilities,
+                      node.capabilities,
                       uint(node.address.tcpPort),
                       node.keys.pubkey.getRaw())
 
@@ -208,7 +208,6 @@ proc newMockPeer*(userConfigurator: proc (m: MockConf)): EthereumNode =
         msg: makeProtoMsgPair(p2p.hello),
         response: sendHello)
 
-  node.initProtocolStates()
   node.startListening()
   return node
 

@@ -26,10 +26,10 @@ type
   AbcNetwork = ref object
     peers: seq[string]
 
-rlpxProtocol abc(version = 1,
-                 peerState = AbcPeer,
-                 networkState = AbcNetwork,
-                 timeout = 100):
+p2pProtocol abc(version = 1,
+                peerState = AbcPeer,
+                networkState = AbcNetwork,
+                timeout = 100):
 
   onPeerConnected do (peer: Peer):
     await peer.hi "Bob"
@@ -58,10 +58,10 @@ rlpxProtocol abc(version = 1,
     else:
       p.state.lastResponse = "timeout"
 
-rlpxProtocol xyz(version = 1,
-                 peerState = XyzPeer,
-                 useRequestIds = false,
-                 timeout = 100):
+p2pProtocol xyz(version = 1,
+                peerState = XyzPeer,
+                useRequestIds = false,
+                timeout = 100):
 
   proc foo(p: Peer, s: string, a, z: int) =
     p.state.messages += 1
@@ -94,7 +94,6 @@ asyncTest "network with 3 peers using custom protocols":
   let localKeys = newKeyPair()
   let localAddress = localAddress(30303)
   var localNode = newEthereumNode(localKeys, localAddress, 1, nil, useCompression = useCompression)
-  localNode.initProtocolStates()
   localNode.startListening()
 
   var mock1 = newMockPeer do (m: MockConf):

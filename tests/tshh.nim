@@ -11,14 +11,14 @@ import
   sequtils, options, unittest, times, tables,
   nimcrypto/hash,
   eth_keys, rlp,
-  eth_p2p/rlpx_protocols/shh_protocol as shh
+  eth_p2p/rlpx_protocols/shh_protocol as whisper
 
 suite "Whisper payload":
   test "should roundtrip without keys":
     let payload = Payload(payload: @[byte 0, 1, 2])
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -27,9 +27,9 @@ suite "Whisper payload":
   test "should roundtrip with symmetric encryption":
     var symKey: SymKey
     let payload = Payload(symKey: some(symKey), payload: @[byte 0, 1, 2])
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get(), symKey = some(symKey))
+    let decoded = whisper.decode(encoded.get(), symKey = some(symKey))
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -39,9 +39,9 @@ suite "Whisper payload":
     let privKey = eth_keys.newPrivateKey()
 
     let payload = Payload(src: some(privKey), payload: @[byte 0, 1, 2])
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -53,9 +53,9 @@ suite "Whisper payload":
 
     let payload = Payload(dst: some(privKey.getPublicKey()),
       payload: @[byte 0, 1, 2])
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get(), dst = some(privKey))
+    let decoded = whisper.decode(encoded.get(), dst = some(privKey))
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -73,9 +73,9 @@ suite "Whisper payload":
 suite "Whisper payload padding":
   test "should do max padding":
     let payload = Payload(payload: repeat(byte 1, 254))
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -86,9 +86,9 @@ suite "Whisper payload padding":
     let privKey = eth_keys.newPrivateKey()
 
     let payload = Payload(src: some(privKey), payload: repeat(byte 1, 189))
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -98,9 +98,9 @@ suite "Whisper payload padding":
 
   test "should do min padding":
     let payload = Payload(payload: repeat(byte 1, 253))
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -111,9 +111,9 @@ suite "Whisper payload padding":
     let privKey = eth_keys.newPrivateKey()
 
     let payload = Payload(src: some(privKey), payload: repeat(byte 1, 188))
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -124,9 +124,9 @@ suite "Whisper payload padding":
   test "should roundtrip custom padding":
     let payload = Payload(payload: repeat(byte 1, 10),
                           padding: some(repeat(byte 2, 100)))
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -137,9 +137,9 @@ suite "Whisper payload padding":
     let padding: seq[byte] = @[]
     let payload = Payload(payload: repeat(byte 1, 10),
                           padding: some(padding))
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -149,9 +149,9 @@ suite "Whisper payload padding":
     let privKey = eth_keys.newPrivateKey()
     let payload = Payload(src: some(privKey), payload: repeat(byte 1, 10),
                           padding: some(repeat(byte 2, 100)))
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -164,9 +164,9 @@ suite "Whisper payload padding":
     let privKey = eth_keys.newPrivateKey()
     let payload = Payload(src: some(privKey), payload: repeat(byte 1, 10),
                           padding: some(padding))
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
 
-    let decoded = shh.decode(encoded.get())
+    let decoded = whisper.decode(encoded.get())
     check:
       decoded.isSome()
       payload.payload == decoded.get().payload
@@ -280,7 +280,7 @@ proc prepFilterTestMsg(pubKey = none[PublicKey](), symKey = none[SymKey](),
                        src = none[PrivateKey](), topic: Topic): Message =
     let payload = Payload(dst: pubKey, symKey: symKey, src: src,
                           payload: @[byte 0, 1, 2])
-    let encoded = shh.encode(payload)
+    let encoded = whisper.encode(payload)
     let env = Envelope(expiry: 1, ttl: 1, topic: topic, data: encoded.get(),
                        nonce: 0)
     result = initMessage(env)

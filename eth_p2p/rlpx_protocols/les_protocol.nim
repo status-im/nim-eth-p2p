@@ -158,12 +158,12 @@ func getRequiredValue(values: openarray[KeyValuePair],
   raise newException(HandshakeError,
                      "Required handshake field " & key & " missing")
 
-rlpxProtocol les(version = lesVersion,
-                 peerState = LesPeer,
-                 networkState = LesNetwork,
-                 outgoingRequestDecorator = outgoingRequestDecorator,
-                 incomingRequestDecorator = incomingRequestDecorator,
-                 incomingResponseThunkDecorator = incomingResponseDecorator):
+p2pProtocol les(version = lesVersion,
+                peerState = LesPeer,
+                networkState = LesNetwork,
+                outgoingRequestDecorator = outgoingRequestDecorator,
+                incomingRequestDecorator = incomingRequestDecorator,
+                incomingResponseThunkDecorator = incomingResponseDecorator):
 
   ## Handshake
   ##
