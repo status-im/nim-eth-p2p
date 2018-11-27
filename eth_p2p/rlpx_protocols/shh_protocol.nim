@@ -112,6 +112,8 @@ type
     handler: Option[FilterMsgHandler]
     queue: seq[ReceivedMessage]
 
+  Filters* = Table[string, Filter]
+
   WhisperConfig* = object
     powRequirement*: float64
     bloom*: Bloom
@@ -558,7 +560,22 @@ proc newFilter*(src = none[PublicKey](), privateKey = none[PrivateKey](),
   Filter(src: src, privateKey: privateKey, symKey: symKey, topics: topics,
          powReq: powReq, allowP2P: allowP2P, bloom: toBloom(topics))
 
-proc notify(filters: var Table[string, Filter], msg: Message) =
+proc subscribeFilter*(filters: var Filters, filter: Filter,
+                      handler = none[FilterMsgHandler]()): string =
+  # NOTE: Should we allow a filter without a key? Encryption is mandatory in v6?
+  # Check if asymmetric _and_ symmetric key? Now asymmetric just has precedence.
+  let id = generateRandomID()
+  var filter = filter
+  if handler.isSome():
+   filter.handler = handler
+  else:
+   filter.queue = newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
+
+  filters.add(id, filter)
+  debug "Filter added", filter = id
+  return id
+
+proc notify*(filters: var Filters, msg: Message) =
  var decoded: Option[DecodedPayload]
  var keyHash: Hash
 
@@ -616,6 +633,19 @@ proc notify(filters: var Table[string, Filter], msg: Message) =
    else:
      filter.queue.insert(receivedMsg)
 
+proc getFilterMessages*(filters: var Filters, filterId: string): seq[ReceivedMessage] =
+  result = @[]
+  if filters.contains(filterId):
+    if filters[filterId].handler.isNone():
+      result = filters[filterId].queue
+      filters[filterId].queue =
+        newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
+
+proc toBloom*(filters: Filters): Bloom =
+  for filter in filters.values:
+    if filter.topics.len > 0:
+      result = result or filter.bloom
+
 type
   PeerState = ref object
     initialized*: bool # when successfully completed the handshake
@@ -628,7 +658,7 @@ type
 
   WhisperState = ref object
     queue*: Queue
-    filters*: Table[string, Filter]
+    filters*: Filters
     config*: WhisperConfig
 
 proc run(peer: Peer) {.async.}
@@ -868,29 +898,17 @@ proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
 
 proc subscribeFilter*(node: EthereumNode, filter: Filter,
                       handler = none[FilterMsgHandler]()): string =
-  # NOTE: Should we allow a filter without a key? Encryption is mandatory in v6?
-  # Check if asymmetric _and_ symmetric key? Now asymmetric just has precedence.
-  let id = generateRandomID()
-  var filter = filter
-  if handler.isSome():
-    filter.handler = handler
-  else:
-    filter.queue = newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
-  node.protocolState(shh).filters.add(id, filter)
-  debug "Filter added", filter = id
-  return id
+  return node.protocolState(shh).filters.subscribeFilter(filter, handler)
 
 proc unsubscribeFilter*(node: EthereumNode, filterId: string): bool =
   var filter: Filter
   return node.protocolState(shh).filters.take(filterId, filter)
 
 proc getFilterMessages*(node: EthereumNode, filterId: string): seq[ReceivedMessage] =
-  result = @[]
-  if node.protocolState(shh).filters.contains(filterId):
-    if node.protocolState(shh).filters[filterId].handler.isNone():
-      result = node.protocolState(shh).filters[filterId].queue
-      node.protocolState(shh).filters[filterId].queue =
-        newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
+  return node.protocolState(shh).filters.getFilterMessages(filterId)
+
+proc filtersToBloom*(node: EthereumNode): Bloom =
+  return node.protocolState(shh).filters.toBloom()
 
 proc setPowRequirement*(node: EthereumNode, powReq: float64) {.async.} =
   # NOTE: do we need a tolerance of old PoW for some time?
@@ -905,11 +923,6 @@ proc setBloomFilter*(node: EthereumNode, bloom: Bloom) {.async.} =
   for peer in node.peers(shh):
     # asyncCheck peer.bloomFilterExchange(@bloom)
     await peer.bloomFilterExchange(@bloom)
-
-proc filtersToBloom*(node: EthereumNode): Bloom =
-  for filter in node.protocolState(shh).filters.values:
-    if filter.topics.len > 0:
-      result = result or filter.bloom
 
 proc setMaxMessageSize*(node: EthereumNode, size: uint32): bool =
   if size > defaultMaxMsgSize:
