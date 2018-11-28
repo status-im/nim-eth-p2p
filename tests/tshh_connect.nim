@@ -9,7 +9,7 @@
 
 import
   sequtils, options, unittest, tables, asyncdispatch2, rlp, eth_keys,
-  eth_p2p, eth_p2p/rlpx_protocols/[shh_protocol], eth_p2p/[discovery, enode]
+  eth_p2p, eth_p2p/rlpx_protocols/[whisper_protocol], eth_p2p/[discovery, enode]
 
 proc localAddress(port: int): Address =
   let port = Port(port)
@@ -100,18 +100,18 @@ asyncTest "Filters with encryption and signing":
   # Filters
   # filter for encrypted asym
   filters.add(node1.subscribeFilter(newFilter(privateKey = some(encryptKeyPair.seckey),
-                                              topics = @[topic]), some(handler1)))
+                                              topics = @[topic]), handler1))
   # filter for encrypted asym + signed
   filters.add(node1.subscribeFilter(newFilter(some(signKeyPair.pubkey),
                                               privateKey = some(encryptKeyPair.seckey),
-                                              topics = @[topic]), some(handler2)))
+                                              topics = @[topic]), handler2))
   # filter for encrypted sym
   filters.add(node1.subscribeFilter(newFilter(symKey = some(symKey),
-                                              topics = @[topic]), some(handler3)))
+                                              topics = @[topic]), handler3))
   # filter for encrypted sym + signed
   filters.add(node1.subscribeFilter(newFilter(some(signKeyPair.pubkey),
                                               symKey = some(symKey),
-                                              topics = @[topic]), some(handler4)))
+                                              topics = @[topic]), handler4))
   # Messages
   # encrypted asym
   check true == node2.postMessage(some(encryptKeyPair.pubkey), ttl = 5,
@@ -153,8 +153,8 @@ asyncTest "Filters with topics":
     check msg.decoded.payload == payloads[1]
     futures[1].complete(1)
 
-  var filter1 = node1.subscribeFilter(newFilter(topics = @[topic1]), some(handler1))
-  var filter2 = node1.subscribeFilter(newFilter(topics = @[topic2]), some(handler2))
+  var filter1 = node1.subscribeFilter(newFilter(topics = @[topic1]), handler1)
+  var filter2 = node1.subscribeFilter(newFilter(topics = @[topic2]), handler2)
 
   check:
     true == node2.postMessage(ttl = 3, topic = topic1, payload = payloads[0])
@@ -183,9 +183,9 @@ asyncTest "Filters with PoW":
     futures[1].complete(1)
 
   var filter1 = node1.subscribeFilter(newFilter(topics = @[topic], powReq = 0),
-                                      some(handler1))
+                                      handler1)
   var filter2 = node1.subscribeFilter(newFilter(topics = @[topic], powReq = 10),
-                                      some(handler2))
+                                      handler2)
 
   check:
     true == node2.postMessage(ttl = 2, topic = topic, payload = payload)
@@ -228,7 +228,7 @@ asyncTest "Bloomfilter blocking":
   proc handler(msg: ReceivedMessage) =
     check msg.decoded.payload == payload
     f.complete(1)
-  var filter = node1.subscribeFilter(newFilter(topics = filterTopics), some(handler))
+  var filter = node1.subscribeFilter(newFilter(topics = filterTopics), handler)
   await node1.setBloomFilter(node1.filtersToBloom())
 
   check true == node2.postMessage(ttl = 1, topic = sendTopic1, payload = payload)
@@ -298,10 +298,9 @@ asyncTest "Queue pruning":
 asyncTest "Light node posting":
   let topic = [byte 0, 0, 0, 0]
   node1.setLightNode(true)
-  var result = node1.postMessage(ttl = 2, topic = topic, payload = repeat(byte 0, 10))
 
   check:
-    result == false
+    node1.postMessage(ttl = 2, topic = topic, payload = repeat(byte 0, 10)) == false
     node1.protocolState(Whisper).queue.items.len == 0
 
   node1.setLightNode(false)
@@ -314,7 +313,7 @@ asyncTest "P2P":
     f.complete(1)
 
   var filter = node1.subscribeFilter(newFilter(topics = @[topic], allowP2P = true),
-                                     some(handler))
+                                     handler)
   check:
     true == node1.setPeerTrusted(toNodeId(node2.keys.pubkey))
     true == node2.postMessage(ttl = 2, topic = topic,
