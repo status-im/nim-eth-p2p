@@ -9,7 +9,7 @@
 
 import
   options, unittest, asyncdispatch2, rlp, eth_keys,
-  eth_p2p, eth_p2p/mock_peers, eth_p2p/rlpx_protocols/[shh_protocol]
+  eth_p2p, eth_p2p/mock_peers, eth_p2p/rlpx_protocols/[whisper_protocol]
 
 proc localAddress(port: int): Address =
   let port = Port(port)

@@ -109,7 +109,7 @@ type
     allowP2P: bool
 
     bloom: Bloom # cached bloom filter of all topics of filter
-    handler: Option[FilterMsgHandler]
+    handler: FilterMsgHandler
     queue: seq[ReceivedMessage]
 
   Filters* = Table[string, Filter]
@@ -545,8 +545,6 @@ proc add*(self: var Queue, msg: Message): bool =
       self.itemHashes.excl(last)
 
   # check for duplicate
-  # NOTE: Could also track if duplicates come from the same peer and disconnect
-  # from that peer. Is this tracking overhead worth it though?
   if self.itemHashes.containsOrIncl(msg):
     return false
   else:
@@ -561,15 +559,15 @@ proc newFilter*(src = none[PublicKey](), privateKey = none[PrivateKey](),
          powReq: powReq, allowP2P: allowP2P, bloom: toBloom(topics))
 
 proc subscribeFilter*(filters: var Filters, filter: Filter,
-                      handler = none[FilterMsgHandler]()): string =
+                      handler:FilterMsgHandler = nil): string =
   # NOTE: Should we allow a filter without a key? Encryption is mandatory in v6?
   # Check if asymmetric _and_ symmetric key? Now asymmetric just has precedence.
   let id = generateRandomID()
   var filter = filter
-  if handler.isSome():
-   filter.handler = handler
+  if handler.isNil():
+    filter.queue = newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
   else:
-   filter.queue = newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
+    filter.handler = handler
 
   filters.add(id, filter)
   debug "Filter added", filter = id
@@ -628,16 +626,16 @@ proc notify*(filters: var Filters, msg: Message) =
                                      pow: msg.pow,
                                      hash: msg.hash)
    # Either run callback or add to queue
-   if filter.handler.isSome():
-     filter.handler.get()(receivedMsg)
-   else:
+   if filter.handler.isNil():
      filter.queue.insert(receivedMsg)
+   else:
+     filter.handler(receivedMsg)
 
 proc getFilterMessages*(filters: var Filters, filterId: string): seq[ReceivedMessage] =
   result = @[]
   if filters.contains(filterId):
-    if filters[filterId].handler.isNone():
-      result = filters[filterId].queue
+    if filters[filterId].handler.isNil():
+      shallowCopy(result, filters[filterId].queue)
       filters[filterId].queue =
         newSeqOfCap[ReceivedMessage](defaultFilterQueueCapacity)
 
@@ -715,7 +713,9 @@ p2pProtocol Whisper(version = whisperVersion,
     whisperPeer.trusted = false
     whisperPeer.initialized = true
 
-    asyncCheck peer.run()
+    if not whisperNet.config.isLightNode:
+      asyncCheck peer.run()
+
     debug "Whisper peer initialized"
 
   onPeerDisconnected do (peer: Peer, reason: DisconnectionReason) {.gcsafe.}:
@@ -747,9 +747,18 @@ p2pProtocol Whisper(version = whisperVersion,
         # await peer.disconnect(SubprotocolReason)
         continue
 
-      # This peer send it thus should not receive it again
-      peer.state.received.incl(msg)
+      # This peer send this message thus should not receive it again.
+      # If this peer has the message in the `received` set already, this means
+      # it was either already received here from this peer or send to this peer.
+      # Either way it will be in our queue already (and the peer should know
+      # this) and this peer is sending duplicates.
+      if peer.state.received.containsOrIncl(msg):
+        warn "Peer sending duplicate messages"
+        # await peer.disconnect(SubprotocolReason)
+        continue
 
+      # This can still be a duplicate message, but from another peer than
+      # the peer who send the message.
       if peer.networkState.queue.add(msg):
         # notify filters of this message
         peer.networkState.filters.notify(msg)
@@ -817,10 +826,7 @@ proc run(peer: Peer) {.async.} =
 
   whisperPeer.running = true
   while whisperPeer.running:
-    # XXX: shouldn't this be outside of the loop?
-    # In case we are runinng a light node, we have nothing to do here?
-    if not whisperNet.config.isLightNode:
-      peer.processQueue()
+    peer.processQueue()
     await sleepAsync(300)
 
 proc pruneReceived(node: EthereumNode) =
@@ -906,7 +912,7 @@ proc postMessage*(node: EthereumNode, pubKey = none[PublicKey](),
     return false
 
 proc subscribeFilter*(node: EthereumNode, filter: Filter,
-                      handler = none[FilterMsgHandler]()): string =
+                      handler:FilterMsgHandler = nil): string =
   return node.protocolState(Whisper).filters.subscribeFilter(filter, handler)
 
 proc unsubscribeFilter*(node: EthereumNode, filterId: string): bool =
@@ -922,16 +928,20 @@ proc filtersToBloom*(node: EthereumNode): Bloom =
 proc setPowRequirement*(node: EthereumNode, powReq: float64) {.async.} =
   # NOTE: do we need a tolerance of old PoW for some time?
   node.protocolState(Whisper).config.powRequirement = powReq
+  var futures: seq[Future[void]] = @[]
   for peer in node.peers(Whisper):
-    # asyncCheck peer.powRequirement(cast[uint](powReq))
-    await peer.powRequirement(cast[uint](powReq))
+    futures.add(peer.powRequirement(cast[uint](powReq)))
+
+  await all(futures)
 
 proc setBloomFilter*(node: EthereumNode, bloom: Bloom) {.async.} =
   # NOTE: do we need a tolerance of old bloom filter for some time?
   node.protocolState(Whisper).config.bloom = bloom
+  var futures: seq[Future[void]] = @[]
   for peer in node.peers(Whisper):
-    # asyncCheck peer.bloomFilterExchange(@bloom)
-    await peer.bloomFilterExchange(@bloom)
+    futures.add(peer.bloomFilterExchange(@bloom))
+
+  await all(futures)
 
 proc setMaxMessageSize*(node: EthereumNode, size: uint32): bool =
   if size > defaultMaxMsgSize:
@@ -946,12 +956,11 @@ proc setPeerTrusted*(node: EthereumNode, peerId: NodeId): bool =
       peer.state(Whisper).trusted = true
       return true
 
-# XXX: should probably only be allowed before connection is made,
-# as there exists no message to communicate to peers that it is a light node
-# How to arrange that?
+# NOTE: Should be run before connection is made with peers
 proc setLightNode*(node: EthereumNode, isLightNode: bool) =
   node.protocolState(Whisper).config.isLightNode = isLightNode
 
+# NOTE: Should be run before connection is made with peers
 proc configureWhisper*(node: EthereumNode, config: WhisperConfig) =
   node.protocolState(Whisper).config = config
 

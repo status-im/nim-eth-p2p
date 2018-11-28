@@ -9,7 +9,7 @@
 
 import
   sequtils, options, strutils, parseopt, asyncdispatch2,
-  eth_keys, rlp, eth_p2p, eth_p2p/rlpx_protocols/[shh_protocol],
+  eth_keys, rlp, eth_p2p, eth_p2p/rlpx_protocols/[whisper_protocol],
   eth_p2p/[discovery, enode, peer_pool]
 
 const
@@ -153,21 +153,21 @@ if config.watch:
   # filter encrypted asym
   discard node.subscribeFilter(newFilter(privateKey = some(encPrivateKey),
                                          topics = @[topic]),
-                               some((FilterMsgHandler)handler))
+                               handler)
   # filter encrypted asym + signed
   discard node.subscribeFilter(newFilter(some(signPublicKey),
                                          privateKey = some(encPrivateKey),
                                          topics = @[topic]),
-                               some((FilterMsgHandler)handler))
+                               handler)
   # filter encrypted sym
   discard node.subscribeFilter(newFilter(symKey = some(symKey),
                                          topics = @[topic]),
-                               some((FilterMsgHandler)handler))
+                               handler)
   # filter encrypted sym + signed
   discard node.subscribeFilter(newFilter(some(signPublicKey),
                                          symKey = some(symKey),
                                          topics = @[topic]),
-                               some((FilterMsgHandler)handler))
+                               handler)
 
 if config.post:
   # encrypted asym
