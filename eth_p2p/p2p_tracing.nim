@@ -1,22 +1,24 @@
 import
-  macros,
-  serialization, json_serialization/writer,
-  chronicles, chronicles_tail/configuration,
   private/types
-
-export
-  # XXX: Nim visibility rules get in the way here.
-  # It would be nice if the users of this module don't have to
-  # import json_serializer, but this won't work at the moment,
-  # because the `encode` call inside `logMsgEvent` has its symbols
-  # mixed in from the module where `logMsgEvent` is called
-  # (instead of from this module, which will be more logical).
-  init, writeValue, getOutput
-  # TODO: File this as an issue
 
 const tracingEnabled* = defined(p2pdump)
 
 when tracingEnabled:
+  import
+    macros,
+    serialization, json_serialization/writer,
+    chronicles, chronicles_tail/configuration
+
+  export
+    # XXX: Nim visibility rules get in the way here.
+    # It would be nice if the users of this module don't have to
+    # import json_serializer, but this won't work at the moment,
+    # because the `encode` call inside `logMsgEvent` has its symbols
+    # mixed in from the module where `logMsgEvent` is called
+    # (instead of from this module, which will be more logical).
+    init, writeValue, getOutput
+    # TODO: File this as an issue
+
   logStream p2pMessages[json[file(p2p_messages.json,truncate)]]
   p2pMessages.useTailPlugin "p2p_tracing_ctail_plugin.nim"
 

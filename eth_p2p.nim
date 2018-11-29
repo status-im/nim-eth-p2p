@@ -149,3 +149,12 @@ proc randomPeer*(node: EthereumNode): Peer =
   for peer in node.peers:
     if i == peerIdx: return peer
     inc i
+
+proc randomPeerWith*(node: EthereumNode, Protocol: type): Peer =
+  mixin state
+  var candidates = newSeq[Peer]()
+  for p in node.peers(Protocol):
+    candidates.add(p)
+  if candidates.len > 0:
+    return candidates[random(candidates.len)]
+

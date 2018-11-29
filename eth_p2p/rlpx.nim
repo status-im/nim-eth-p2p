@@ -548,6 +548,7 @@ proc getState(peer: Peer, proto: ProtocolInfo): RootRef =
 template state*(peer: Peer, Protocol: type): untyped =
   ## Returns the state object of a particular protocol for a
   ## particular connection.
+  mixin State
   bind getState
   cast[Protocol.State](getState(peer, Protocol.protocolInfo))
 
@@ -555,6 +556,7 @@ proc getNetworkState(node: EthereumNode, proto: ProtocolInfo): RootRef =
   node.protocolStates[proto.index]
 
 template protocolState*(node: EthereumNode, Protocol: type): untyped =
+  mixin NetworkState
   bind getNetworkState
   cast[Protocol.NetworkState](getNetworkState(node, Protocol.protocolInfo))
 
