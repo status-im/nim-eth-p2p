@@ -32,5 +32,5 @@ task test, "Runs the test suite":
   runTest "tdiscovery"
   runTest "tserver"
   runTest "tserver", "-d:useSnappy"
-  # runTest "tshh_connect"
+  runTest "tshh_connect"
   runTest "tshh_connect_mocked"
