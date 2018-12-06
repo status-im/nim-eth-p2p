@@ -277,9 +277,10 @@ suite "Whisper queue":
 
 # To test filters we do not care if the msg is valid or allowed
 proc prepFilterTestMsg(pubKey = none[PublicKey](), symKey = none[SymKey](),
-                       src = none[PrivateKey](), topic: Topic): Message =
+                       src = none[PrivateKey](), topic: Topic,
+                       padding = none[seq[byte]]()): Message =
     let payload = Payload(dst: pubKey, symKey: symKey, src: src,
-                          payload: @[byte 0, 1, 2])
+                          payload: @[byte 0, 1, 2], padding: padding)
     let encoded = whisper.encode(payload)
     let env = Envelope(expiry: 1, ttl: 1, topic: topic, data: encoded.get(),
                        nonce: 0)
@@ -332,9 +333,10 @@ suite "Whisper filter":
 
   test "test notify of filter against PoW requirement":
     let topic = [byte 0, 0, 0, 0]
+    let padding = some(repeat(byte 0, 251))
     # this message has a PoW of 0.02962962962962963, number should be updated
-    # in case PoW algorithm changes
-    let msg = prepFilterTestMsg(topic = topic)
+    # in case PoW algorithm changes or contents of padding, payload, topic, etc.
+    let msg = prepFilterTestMsg(topic = topic, padding = padding)
 
     var filters = initTable[string, Filter]()
     let

@@ -25,6 +25,8 @@ const
   whisperVersion* = 6
   defaultMinPow* = 0.001'f64
   defaultMaxMsgSize* = 1024'u32 * 1024'u32 # * 10 # should be no higher than max RLPx size
+  messageInterval* = 300 ## Interval at which messages are send to peers, in ms
+  pruneInterval* = 1000 ## Interval at which message queue is pruned, in ms
 
 type
   Hash* = MDigest[256]
@@ -181,13 +183,9 @@ proc `or`(a, b: Bloom): Bloom =
 
 proc bytesCopy(bloom: var Bloom, b: Bytes) =
   assert b.len == bloomSize
-  # memcopy?
-  for i in 0..<bloom.len:
-    bloom[i] = b[i]
+  copyMem(addr bloom[0], unsafeAddr b[0], bloomSize)
 
 proc toBloom*(topics: openArray[Topic]): Bloom =
-  #if topics.len == 0:
-    # XXX: should we set the bloom here the all 1's ?
   for topic in topics:
     result = result or topicBloom(topic)
 
@@ -198,12 +196,9 @@ proc bloomFilterMatch(filter, sample: Bloom): bool =
   return true
 
 proc fullBloom*(): Bloom =
+  # There is no setMem exported in system, assume compiler is smart enough?
   for i in 0..<result.len:
     result[i] = 0xFF
-
-proc emptyBloom*(): Bloom =
-  for i in 0..<result.len:
-    result[i] = 0x00
 
 proc encryptAesGcm(plain: openarray[byte], key: SymKey,
     iv: array[gcmIVLen, byte]): Bytes =
@@ -297,7 +292,12 @@ proc encode*(self: Payload): Option[Bytes] =
   if self.padding.isSome():
     plain.add self.padding.get()
   else:
-    plain.add repeat(0'u8, padLen) # XXX: should be random
+    var padding = newSeq[byte](padLen)
+    if randomBytes(padding) != padLen:
+      notice "Generation of random padding failed"
+      return
+
+    plain.add padding
 
   if self.src.isSome(): # Private key present - signature requested
     let hash = keccak256.digest(plain)
@@ -318,7 +318,11 @@ proc encode*(self: Payload): Option[Bytes] =
     return some(res)
 
   if self.symKey.isSome(): # Symmetric key present - encryption requested
-    var iv: array[gcmIVLen, byte] # XXX: random!
+    var iv: array[gcmIVLen, byte]
+    if randomBytes(iv) != gcmIVLen:
+      notice "Generation of random IV failed"
+      return
+
     return some(encryptAesGcm(plain, self.symKey.get(), iv))
 
   # No encryption!
@@ -449,12 +453,13 @@ proc minePow*(self: Envelope, seconds: float): uint64 =
   while epochTime() < mineEnd or bestPow == 0: # At least one round
     var tmp = ctx # copy hash calculated so far - we'll reuse that for each iter
     tmp.update(i.toBE())
-    i.inc
     # XXX:a random nonce here would not leak number of iters
     let pow = calcPow(1, 1, tmp.finish())
     if pow > bestPow: # XXX: could also compare hashes as numbers instead
       bestPow = pow
       result = i.uint64
+
+    i.inc
 
 proc calcPowHash*(self: Envelope): Hash =
   ## Calculate the message hash, as done during mining - this can be used to
@@ -555,6 +560,9 @@ proc add*(self: var Queue, msg: Message): bool =
 proc newFilter*(src = none[PublicKey](), privateKey = none[PrivateKey](),
                 symKey = none[SymKey](), topics: seq[Topic] = @[],
                 powReq = 0.0, allowP2P = false): Filter =
+  # Zero topics will give an empty bloom filter which is fine as this bloom
+  # filter is only used to `or` with existing/other bloom filters. Not to do
+  # matching.
   Filter(src: src, privateKey: privateKey, symKey: symKey, topics: topics,
          powReq: powReq, allowP2P: allowP2P, bloom: toBloom(topics))
 
@@ -689,7 +697,7 @@ p2pProtocol Whisper(version = whisperVersion,
                                    whisperNet.config.isLightNode))
 
     if m.protocolVersion == whisperVersion:
-      debug "Suitable Whisper peer", peer, whisperVersion
+      debug "Whisper peer", peer, whisperVersion
     else:
       raise newException(UselessPeerError, "Incompatible Whisper version")
 
@@ -827,7 +835,7 @@ proc run(peer: Peer) {.async.} =
   whisperPeer.running = true
   while whisperPeer.running:
     peer.processQueue()
-    await sleepAsync(300)
+    await sleepAsync(messageInterval)
 
 proc pruneReceived(node: EthereumNode) =
   if node.peerPool != nil: # XXX: a bit dirty to need to check for this here ...
@@ -850,7 +858,7 @@ proc run(node: EthereumNode, network: WhisperNetwork) {.async.} =
     # pruning the received sets is not necessary for correct workings
     # but simply from keeping the sets growing indefinitely
     node.pruneReceived()
-    await sleepAsync(1000)
+    await sleepAsync(pruneInterval)
 
 # Public EthereumNode calls ----------------------------------------------------
 
@@ -964,3 +972,6 @@ proc setLightNode*(node: EthereumNode, isLightNode: bool) =
 proc configureWhisper*(node: EthereumNode, config: WhisperConfig) =
   node.protocolState(Whisper).config = config
 
+# Not something that should be run in normal circumstances
+proc resetMessageQueue*(node: EthereumNode) =
+  node.protocolState(Whisper).queue = initQueue(defaultQueueCapacity)
