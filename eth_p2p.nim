@@ -74,7 +74,7 @@ proc processIncoming(server: StreamServer,
     remote.close()
 
 proc startListening*(node: EthereumNode) =
-  info "RLPx listener up", self = initENode(node.keys.pubKey, node.address)
+  trace "RLPx listener up", self = initENode(node.keys.pubKey, node.address)
   let ta = initTAddress(node.address.ip, node.address.tcpPort)
   if node.listeningServer == nil:
     node.listeningServer = createStreamServer(ta, processIncoming,
@@ -107,12 +107,12 @@ proc connectToNetwork*(node: EthereumNode,
     node.discovery.open()
     await node.discovery.bootstrap()
   else:
-    info "Disovery disabled"
+    info "Discovery disabled"
 
   node.peerPool.start()
 
   while node.peerPool.connectedNodes.len == 0:
-    debug "Waiting for more peers", peers = node.peerPool.connectedNodes.len
+    trace "Waiting for more peers", peers = node.peerPool.connectedNodes.len
     await sleepAsync(500)
 
 proc stopListening*(node: EthereumNode) =

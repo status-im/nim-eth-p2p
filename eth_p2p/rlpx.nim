@@ -203,8 +203,13 @@ proc requestResolver[MsgType](msg: pointer, future: FutureBase) =
       else:
         doAssert false, "trying to resolve a timed out request with a value"
     else:
-      if not f.read.isSome:
-        doAssert false, "a request timed out twice"
+      try:
+        if not f.read.isSome:
+          doAssert false, "a request timed out twice"
+      except:
+        debug "Exception in requestResolver()",
+          exc = getCurrentException().name,
+          err = getCurrentExceptionMsg()
 
 proc registerMsg(protocol: var ProtocolInfo,
                  id: int, name: string,
@@ -287,6 +292,9 @@ proc sendMsg*(peer: Peer, data: Bytes) {.async.} =
     discard await peer.transport.write(cipherText)
   except:
     await peer.disconnect(TcpError)
+    # this is usually a "(32) Broken pipe":
+    # FIXME: this exception should be caught somewhere in addMsgHandler() and
+    # sending should be retried a few times
     raise
 
 proc send*[Msg](peer: Peer, msg: Msg): Future[void] =
@@ -352,7 +360,7 @@ proc resolveResponseFuture(peer: Peer, msgId: int, msg: pointer, reqId: int) =
       let oldestReq = outstandingReqs.popFirst
       resolve oldestReq.future
     else:
-      debug "late or duplicate reply for a RLPx request"
+      trace "late or duplicate reply for a RLPx request"
   else:
     # TODO: This is not completely sound because we are still using a global
     # `reqId` sequence (the problem is that we might get a response ID that
@@ -458,7 +466,7 @@ proc checkedRlpRead(peer: Peer, r: var Rlp, MsgType: type): auto {.inline.} =
       return r.read(MsgType)
     except:
       # echo "Failed rlp.read:", tmp.inspect
-      error "Failed rlp.read",
+      debug "Failed rlp.read",
             peer = peer,
             msg = MsgType.name,
             exception = getCurrentExceptionMsg()
@@ -514,7 +522,7 @@ proc dispatchMessages*(peer: Peer) {.async.} =
     try:
       await peer.invokeThunk(msgId, msgData)
     except RlpError:
-      error "endind dispatchMessages loop", peer, err = getCurrentExceptionMsg()
+      debug "ending dispatchMessages loop", peer, err = getCurrentExceptionMsg()
       await peer.disconnect(BreachOfProtocol)
       return
 
@@ -1334,15 +1342,17 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
     if e.reason != TooManyPeers:
       debug "Unexpected disconnect during rlpxConnect", reason = e.reason
   except TransportIncompleteError:
-    debug "Connection dropped in rlpxConnect", remote
+    trace "Connection dropped in rlpxConnect", remote
   except UselessPeerError:
-    debug "Useless peer ", peer = remote
+    trace "Useless peer ", peer = remote
   except RlpTypeMismatch:
     # Some peers report capabilities with names longer than 3 chars. We ignore
     # those for now. Maybe we should allow this though.
     debug "Rlp error in rlpxConnect"
+  except TransportOsError:
+    trace "TransportOsError", err = getCurrentExceptionMsg()
   except:
-    info "Exception in rlpxConnect", remote,
+    debug "Exception in rlpxConnect", remote,
           exc = getCurrentException().name,
           err = getCurrentExceptionMsg()
 
@@ -1413,7 +1423,7 @@ proc rlpxAccept*(node: EthereumNode,
     raise e
   except:
     let e = getCurrentException()
-    error "Exception in rlpxAccept",
+    debug "Exception in rlpxAccept",
           err = getCurrentExceptionMsg(),
           stackTrace = getCurrentException().getStackTrace()
     transport.close()
