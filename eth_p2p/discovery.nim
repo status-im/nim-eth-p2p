@@ -10,7 +10,7 @@
 
 from strutils import nil
 import times, algorithm, logging
-import asyncdispatch2, eth_keys, ranges, stint, nimcrypto, rlp
+import asyncdispatch2, eth_keys, ranges, stint, nimcrypto, rlp, chronicles
 import kademlia, enode
 
 export Node
@@ -100,22 +100,22 @@ proc expiration(): uint32 =
 proc send(d: DiscoveryProtocol, n: Node, data: seq[byte]) =
   let ta = initTAddress(n.node.address.ip, n.node.address.udpPort)
   let f = d.transp.sendTo(ta, data)
-  f.callback = proc(data: pointer) =
+  f.callback = proc(data: pointer) {.gcsafe.} =
     if f.failed:
-      error "Discovery send failed: ", f.readError.msg
+      debug "Discovery send failed", msg = f.readError.msg
 
 proc sendPing*(d: DiscoveryProtocol, n: Node): seq[byte] =
   let payload = rlp.encode((PROTO_VERSION, d.address, n.node.address,
                             expiration())).toRange
   let msg = pack(cmdPing, payload, d.privKey)
   result = msg[0 ..< MAC_SIZE]
-  debug ">>> ping ", n
+  trace ">>> ping ", n
   d.send(n, msg)
 
 proc sendPong*(d: DiscoveryProtocol, n: Node, token: MDigest[256]) =
   let payload = rlp.encode((n.node.address, token, expiration())).toRange
   let msg = pack(cmdPong, payload, d.privKey)
-  debug ">>> pong ", n
+  trace ">>> pong ", n
   d.send(n, msg)
 
 proc sendFindNode*(d: DiscoveryProtocol, n: Node, targetNodeId: NodeId) =
@@ -123,7 +123,7 @@ proc sendFindNode*(d: DiscoveryProtocol, n: Node, targetNodeId: NodeId) =
   data[32 .. ^1] = targetNodeId.toByteArrayBE()
   let payload = rlp.encode((data, expiration())).toRange
   let msg = pack(cmdFindNode, payload, d.privKey)
-  debug ">>> find_node to ", n#, ": ", msg.toHex()
+  trace ">>> find_node to ", n#, ": ", msg.toHex()
   d.send(n, msg)
 
 proc sendNeighbours*(d: DiscoveryProtocol, node: Node, neighbours: seq[Node]) =
@@ -136,7 +136,7 @@ proc sendNeighbours*(d: DiscoveryProtocol, node: Node, neighbours: seq[Node]) =
     block:
       let payload = rlp.encode((nodes, expiration())).toRange
       let msg = pack(cmdNeighbours, payload, d.privkey)
-      debug ">>> neighbours to ", node, ": ", nodes
+      trace "Neighbours to", node, nodes
       d.send(node, msg)
       nodes.setLen(0)
 
@@ -202,7 +202,7 @@ proc recvNeighbours(d: DiscoveryProtocol, node: Node,
 
 proc recvFindNode(d: DiscoveryProtocol, node: Node, payload: Bytes) {.inline.} =
   let rlp = rlpFromBytes(payload.toRange)
-  debug "<<< find_node from ", node
+  trace "<<< find_node from ", node
   let rng = rlp.listElem(0).toBytes
   let nodeId = readUIntBE[256](rng[32 .. ^1].toOpenArray())
   d.kademlia.recvFindNode(node, nodeId)
@@ -232,9 +232,9 @@ proc receive(d: DiscoveryProtocol, a: Address, msg: Bytes) =
         of cmdFindNode:
           d.recvFindNode(node, payload)
         else:
-          echo "Unknown command: ", cmdId
+          debug "Unknown command", cmdId
       else:
-        debug "Received msg ", cmdId, " from ", a, " already expired"
+        trace "Received msg already expired", cmdId, a
     else:
       error "Wrong public key from ", a
   else:
@@ -252,7 +252,7 @@ proc processClient(transp: DatagramTransport,
     let a = Address(ip: raddr.address, udpPort: raddr.port, tcpPort: raddr.port)
     proto.receive(a, buf)
   except:
-    error "receive failed: ", getCurrentExceptionMsg()
+    debug "receive failed", exception = getCurrentExceptionMsg()
 
 proc open*(d: DiscoveryProtocol) =
   let ta = initTAddress(d.address.ip, d.address.udpPort)
@@ -265,7 +265,7 @@ proc run(d: DiscoveryProtocol) {.async.} =
   while true:
     discard await d.lookupRandom()
     await sleepAsync(3000)
-    echo "Discovered nodes: ", d.kademlia.nodesDiscovered
+    trace "Discovered nodes", nodes = d.kademlia.nodesDiscovered
 
 proc bootstrap*(d: DiscoveryProtocol) {.async.} =
   await d.kademlia.bootstrap(d.bootstrapNodes)

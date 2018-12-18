@@ -54,7 +54,7 @@ p2pProtocol eth(version = protocolVersion,
 
     let m = await peer.nextMsg(eth.status)
     if m.networkId == network.networkId and m.genesisHash == chain.genesisHash:
-      debug "suitable peer", peer
+      trace "suitable peer", peer
     else:
       raise newException(UselessPeerError, "Eth handshake params mismatch")
     peer.state.initialized = true

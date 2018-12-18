@@ -47,7 +47,7 @@ proc delObserver*(p: PeerPool, observerId: ref) {.inline.} =
   p.delObserver(cast[int](observerId))
 
 proc stopAllPeers(p: PeerPool) {.async.} =
-  info "Stopping all peers ..."
+  debug "Stopping all peers ..."
   # TODO: ...
   # await asyncio.gather(
   #   *[peer.stop() for peer in self.connected_nodes.values()])
@@ -60,14 +60,14 @@ proc connect(p: PeerPool, remote: Node): Future[Peer] {.async.} =
   ## Connect to the given remote and return a Peer instance when successful.
   ## Returns nil if the remote is unreachable, times out or is useless.
   if remote in p.connectedNodes:
-    debug "skipping_connection_to_already_connected_peer", remote
+    trace "skipping_connection_to_already_connected_peer", remote
     return nil
 
   if remote in p.connectingNodes:
     # debug "skipping connection"
     return nil
 
-  debug "Connecting to node", remote
+  trace "Connecting to node", remote
   p.connectingNodes.incl(remote)
   result = await p.network.rlpxConnect(remote)
   p.connectingNodes.excl(remote)
@@ -114,10 +114,10 @@ proc addPeer*(pool: PeerPool, peer: Peer): bool =
 proc connectToNode*(p: PeerPool, n: Node) {.async.} =
   let peer = await p.connect(n)
   if not peer.isNil:
-    info "Connection established", peer
+    trace "Connection established", peer
     if not p.addPeer(peer):
       # In case an incoming connection was added in the meanwhile
-      debug "Disconnecting peer (outgoing)", reason = AlreadyConnected
+      trace "Disconnecting peer (outgoing)", reason = AlreadyConnected
       await peer.disconnect(AlreadyConnected)
 
 proc connectToNodes(p: PeerPool, nodes: seq[Node]) {.async.} =
@@ -161,7 +161,7 @@ proc maybeConnectToMorePeers(p: PeerPool) {.async.} =
     await p.connectToNode(p.getRandomBootnode())
 
 proc run(p: PeerPool) {.async.} =
-  info "Running PeerPool..."
+  trace "Running PeerPool..."
   p.running = true
   while p.running:
     var dropConnections = false

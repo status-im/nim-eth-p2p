@@ -44,7 +44,7 @@ proc endIndex(b: WantedBlocks): BlockNumber =
 
 proc availableWorkItem(ctx: SyncContext): int =
   var maxPendingBlock = ctx.finalizedBlock
-  echo "queue len: ", ctx.workQueue.len
+  trace "queue len", length = ctx.workQueue.len
   result = -1
   for i in 0 .. ctx.workQueue.high:
     case ctx.workQueue[i].state
@@ -72,17 +72,21 @@ proc availableWorkItem(ctx: SyncContext): int =
   ctx.workQueue[result] = WantedBlocks(startIndex: nextRequestedBlock, numBlocks: numBlocks.uint, state: Initial)
 
 proc persistWorkItem(ctx: SyncContext, wi: var WantedBlocks) =
-  ctx.chain.persistBlocks(wi.headers, wi.bodies)
+  case ctx.chain.persistBlocks(wi.headers, wi.bodies)
+  of ValidationResult.OK:
+    ctx.finalizedBlock = wi.endIndex
+    wi.state = Persisted
+  of ValidationResult.Error:
+    wi.state = Initial
+  # successful or not, we're done with these blocks
   wi.headers.setLen(0)
   wi.bodies.setLen(0)
-  ctx.finalizedBlock = wi.endIndex
-  wi.state = Persisted
 
 proc persistPendingWorkItems(ctx: SyncContext) =
   var nextStartIndex = ctx.finalizedBlock + 1
   var keepRunning = true
   var hasOutOfOrderBlocks = false
-  debug "Looking for out of order blocks"
+  trace "Looking for out of order blocks"
   while keepRunning:
     keepRunning = false
     hasOutOfOrderBlocks = false
@@ -90,7 +94,7 @@ proc persistPendingWorkItems(ctx: SyncContext) =
       let start = ctx.workQueue[i].startIndex
       if ctx.workQueue[i].state == Received:
         if start == nextStartIndex:
-          debug "Persisting pending work item", start
+          trace "Persisting pending work item", start
           ctx.persistWorkItem(ctx.workQueue[i])
           nextStartIndex = ctx.finalizedBlock + 1
           keepRunning = true
@@ -100,29 +104,32 @@ proc persistPendingWorkItems(ctx: SyncContext) =
 
   ctx.hasOutOfOrderBlocks = hasOutOfOrderBlocks
 
-proc returnWorkItem(ctx: SyncContext, workItem: int) =
+proc returnWorkItem(ctx: SyncContext, workItem: int): ValidationResult =
   let wi = addr ctx.workQueue[workItem]
   let askedBlocks = wi.numBlocks.int
   let receivedBlocks = wi.headers.len
   let start = wi.startIndex
 
   if askedBlocks == receivedBlocks:
-    debug "Work item complete", start,
-                                askedBlocks,
-                                receivedBlocks
-  else:
-    warn "Work item complete", start,
-                                askedBlocks,
-                                receivedBlocks
+    trace "Work item complete",
+      start,
+      askedBlocks,
+      receivedBlocks
 
-  if wi.startIndex != ctx.finalizedBlock + 1:
-    info "Blocks out of order", start, final = ctx.finalizedBlock
-    ctx.hasOutOfOrderBlocks = true
-  else:
-    info "Persisting blocks", start
-    ctx.persistWorkItem(wi[])
+    if wi.startIndex != ctx.finalizedBlock + 1:
+      trace "Blocks out of order", start, final = ctx.finalizedBlock
+      ctx.hasOutOfOrderBlocks = true
+
     if ctx.hasOutOfOrderBlocks:
       ctx.persistPendingWorkItems()
+    else:
+      ctx.persistWorkItem(wi[])
+  else:
+    trace "Work item complete but we got fewer blocks than requested, so we're ditching the whole thing.",
+      start,
+      askedBlocks,
+      receivedBlocks
+    return ValidationResult.Error
 
 proc newSyncContext(chain: AbstractChainDB, peerPool: PeerPool): SyncContext =
   new result
@@ -151,18 +158,24 @@ proc getBestBlockNumber(p: Peer): Future[BlockNumber] {.async.} =
 
 proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
   # Update our best block number
-  let bestBlockNumber = await peer.getBestBlockNumber()
-  if bestBlockNumber > syncCtx.endBlockNumber:
-    info "New sync end block number", number = bestBlockNumber
-    syncCtx.endBlockNumber = bestBlockNumber
+  try:
+    let bestBlockNumber = await peer.getBestBlockNumber()
+    if bestBlockNumber > syncCtx.endBlockNumber:
+      trace "New sync end block number", number = bestBlockNumber
+      syncCtx.endBlockNumber = bestBlockNumber
+  except:
+    debug "Exception in getBestBlockNumber()",
+      exc = getCurrentException().name,
+      err = getCurrentExceptionMsg()
+    # no need to exit here, because the context might still have blocks to fetch
+    # from this peer
 
   while (let workItemIdx = syncCtx.availableWorkItem(); workItemIdx != -1):
     template workItem: auto = syncCtx.workQueue[workItemIdx]
     workItem.state = Requested
-    debug "Requesting block headers", start = workItem.startIndex, count = workItem.numBlocks, peer
+    trace "Requesting block headers", start = workItem.startIndex, count = workItem.numBlocks, peer
     let request = BlocksRequest(
-      startBlock: HashOrNum(isHash: false,
-                            number: workItem.startIndex),
+      startBlock: HashOrNum(isHash: false, number: workItem.startIndex),
       maxResults: workItem.numBlocks,
       skip: 0,
       reverse: false)
@@ -175,7 +188,12 @@ proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
 
         var bodies = newSeq[BlockBody]()
         var hashes = newSeq[KeccakHash]()
+        var nextIndex = workItem.startIndex
         for i in workItem.headers:
+          if i.blockNumber != nextIndex:
+            raise newException(Exception, "The block numbers are not in sequence. Not processing this workItem.")
+          else:
+            nextIndex = nextIndex + 1
           hashes.add(blockHash(i))
           if hashes.len == maxBodiesFetch:
             let b = await peer.getBlockBodies(hashes)
@@ -192,15 +210,23 @@ proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
         else:
           warn "Bodies len != headers.len", bodies = bodies.len, headers = workItem.headers.len
     except:
-      # the success case uses `continue`, so we can just fall back to the
+      # the success case sets `dataReceived`, so we can just fall back to the
       # failure path below. If we signal time-outs with exceptions such
       # failures will be easier to handle.
-      discard
+      debug "Exception in obtainBlocksFromPeer()",
+            exc = getCurrentException().name,
+            err = getCurrentExceptionMsg()
+
+    var giveUpOnPeer = false
 
     if dataReceived:
       workItem.state = Received
-      syncCtx.returnWorkItem workItemIdx
+      if syncCtx.returnWorkItem(workItemIdx) != ValidationResult.OK:
+        giveUpOnPeer = true
     else:
+      giveUpOnPeer = true
+
+    if giveUpOnPeer:
       workItem.state = Initial
       try:
         await peer.disconnect(SubprotocolReason)
@@ -209,10 +235,10 @@ proc obtainBlocksFromPeer(syncCtx: SyncContext, peer: Peer) {.async.} =
       syncCtx.handleLostPeer()
       break
 
-  debug "Fininshed otaining blocks", peer
+  trace "Finished obtaining blocks", peer
 
 proc peersAgreeOnChain(a, b: Peer): Future[bool] {.async.} =
-  # Returns true if one of the peers acknowledges existense of the best block
+  # Returns true if one of the peers acknowledges existence of the best block
   # of another peer.
   var
     a = a
@@ -240,7 +266,7 @@ proc randomTrustedPeer(ctx: SyncContext): Peer =
     inc i
 
 proc startSyncWithPeer(ctx: SyncContext, peer: Peer) {.async.} =
-  debug "start sync ", peer, trustedPeers = ctx.trustedPeers.len
+  trace "start sync", peer, trustedPeers = ctx.trustedPeers.len
   if ctx.trustedPeers.len >= minPeersToStartSync:
     # We have enough trusted peers. Validate new peer against trusted
     if await peersAgreeOnChain(peer, ctx.randomTrustedPeer()):
@@ -249,7 +275,7 @@ proc startSyncWithPeer(ctx: SyncContext, peer: Peer) {.async.} =
   elif ctx.trustedPeers.len == 0:
     # Assume the peer is trusted, but don't start sync until we reevaluate
     # it with more peers
-    debug "Assume trusted peer", peer
+    trace "Assume trusted peer", peer
     ctx.trustedPeers.incl(peer)
   else:
     # At this point we have some "trusted" candidates, but they are not
@@ -271,13 +297,13 @@ proc startSyncWithPeer(ctx: SyncContext, peer: Peer) {.async.} =
     let disagreeScore = ctx.trustedPeers.len - agreeScore
 
     if agreeScore == ctx.trustedPeers.len:
-      ctx.trustedPeers.incl(peer) # The best possible outsome
+      ctx.trustedPeers.incl(peer) # The best possible outcome
     elif disagreeScore == 1:
-      info "Peer is no more trusted for sync", peer
+      trace "Peer is no longer trusted for sync", peer
       ctx.trustedPeers.excl(disagreedPeer)
       ctx.trustedPeers.incl(peer)
     else:
-      info "Peer not trusted for sync", peer
+      trace "Peer not trusted for sync", peer
 
     if ctx.trustedPeers.len == minPeersToStartSync:
       for p in ctx.trustedPeers:
@@ -285,15 +311,20 @@ proc startSyncWithPeer(ctx: SyncContext, peer: Peer) {.async.} =
 
 
 proc onPeerConnected(ctx: SyncContext, peer: Peer) =
-  debug "New candidate for sync", peer
-  discard
-  let f = ctx.startSyncWithPeer(peer)
-  f.callback = proc(data: pointer) {.gcsafe.} =
-    if f.failed:
-      error "startSyncWithPeer failed", msg = f.readError.msg, peer
+  trace "New candidate for sync", peer
+  try:
+    let f = ctx.startSyncWithPeer(peer)
+    f.callback = proc(data: pointer) {.gcsafe.} =
+      if f.failed:
+        error "startSyncWithPeer failed", msg = f.readError.msg, peer
+  except:
+    debug "Exception in startSyncWithPeer()",
+      exc = getCurrentException().name,
+      err = getCurrentExceptionMsg()
+
 
 proc onPeerDisconnected(ctx: SyncContext, p: Peer) =
-  debug "peer disconnected ", peer = p
+  trace "peer disconnected ", peer = p
   ctx.trustedPeers.excl(p)
 
 proc startSync(ctx: SyncContext) =
