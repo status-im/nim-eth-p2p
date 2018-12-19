@@ -670,7 +670,7 @@ type
 proc run(peer: Peer) {.async.}
 proc run(node: EthereumNode, network: WhisperNetwork) {.async.}
 
-proc initProtocolState*(network: var WhisperNetwork, node: EthereumNode) =
+proc initProtocolState*(network: WhisperNetwork, node: EthereumNode) =
   network.queue = initQueue(defaultQueueCapacity)
   network.filters = initTable[string, Filter]()
   network.config.bloom = fullBloom()

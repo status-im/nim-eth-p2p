@@ -73,8 +73,11 @@ proc processIncoming(server: StreamServer,
   else:
     remote.close()
 
+proc listeningAddress*(node: EthereumNode): ENode =
+  return initENode(node.keys.pubKey, node.address)
+
 proc startListening*(node: EthereumNode) =
-  trace "RLPx listener up", self = initENode(node.keys.pubKey, node.address)
+  trace "RLPx listener up", self = node.listeningAddress
   let ta = initTAddress(node.address.ip, node.address.tcpPort)
   if node.listeningServer == nil:
     node.listeningServer = createStreamServer(ta, processIncoming,
@@ -156,5 +159,5 @@ proc randomPeerWith*(node: EthereumNode, Protocol: type): Peer =
   for p in node.peers(Protocol):
     candidates.add(p)
   if candidates.len > 0:
-    return candidates[random(candidates.len)]
+    return candidates[rand(candidates.len)]
 

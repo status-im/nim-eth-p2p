@@ -165,8 +165,8 @@ The state objects are initialized to zero by default, but you can modify
 this behaviour by overriding the following procs for your state types:
 
 ```nim
-proc initProtocolState*(state: var MyPeerState, p: Peer)
-proc initProtocolState*(state: var MyNetworkState, n: EthereumNode)
+proc initProtocolState*(state: MyPeerState, p: Peer)
+proc initProtocolState*(state: MyNetworkState, n: EthereumNode)
 ```
 
 Sometimes, you'll need to access the state of another protocol.
