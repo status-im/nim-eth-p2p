@@ -1352,9 +1352,11 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
   except TransportOsError:
     trace "TransportOsError", err = getCurrentExceptionMsg()
   except:
+    let e = getCurrentException()
     debug "Exception in rlpxConnect", remote,
-          exc = getCurrentException().name,
+          exc = e.name,
           err = getCurrentExceptionMsg()
+    raise e
 
   if not ok:
     if not isNil(result.transport):
