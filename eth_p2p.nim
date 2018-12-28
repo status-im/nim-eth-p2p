@@ -37,7 +37,8 @@ proc newEthereumNode*(keys: KeyPair,
                       chain: AbstractChainDB,
                       clientId = "nim-eth-p2p/0.2.0", # TODO: read this value from nimble somehow
                       addAllCapabilities = true,
-                      useCompression: bool = false): EthereumNode =
+                      useCompression: bool = false,
+                      minPeers = 10): EthereumNode =
   new result
   result.keys = keys
   result.networkId = networkId
@@ -52,6 +53,11 @@ proc newEthereumNode*(keys: KeyPair,
                              else: devp2pVersion
 
   result.protocolStates.newSeq allProtocols.len
+
+  result.peerPool = newPeerPool(result, networkId,
+                                keys, nil,
+                                clientId, address.tcpPort,
+                                minPeers = minPeers)
 
   if addAllCapabilities:
     for p in allProtocols:
@@ -88,19 +94,14 @@ proc startListening*(node: EthereumNode) =
 proc connectToNetwork*(node: EthereumNode,
                        bootstrapNodes: seq[ENode],
                        startListening = true,
-                       enableDiscovery = true,
-                       minPeers = 10) {.async.} =
+                       enableDiscovery = true) {.async.} =
   assert node.connectionState == ConnectionState.None
 
   node.connectionState = Connecting
   node.discovery = newDiscoveryProtocol(node.keys.seckey,
                                         node.address,
                                         bootstrapNodes)
-
-  node.peerPool = newPeerPool(node, node.networkId,
-                              node.keys, node.discovery,
-                              node.clientId, node.address.tcpPort,
-                              minPeers = minPeers)
+  node.peerPool.discovery = node.discovery
 
   if startListening:
     eth_p2p.startListening(node)
