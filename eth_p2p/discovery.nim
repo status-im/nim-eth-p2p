@@ -8,12 +8,16 @@
 #            MIT license (LICENSE-MIT)
 #
 
-from strutils import nil
-import times, algorithm, logging
-import asyncdispatch2, eth_keys, ranges, stint, nimcrypto, rlp, chronicles
-import kademlia, enode
+import
+  times,
+  asyncdispatch2, eth_keys, stint, nimcrypto, rlp, chronicles,
+  kademlia, enode
 
-export Node
+export
+  Node
+
+logScope:
+  topics = "discovery"
 
 const
   MAINNET_BOOTNODES* = [
@@ -157,7 +161,7 @@ proc newDiscoveryProtocol*(privKey: PrivateKey, address: Address,
   result.bootstrapNodes = newSeqOfCap[Node](bootstrapNodes.len)
   for n in bootstrapNodes: result.bootstrapNodes.add(newNode(n))
   result.thisNode = newNode(privKey.getPublicKey(), address)
-  result.kademlia = newKademliaProtocol(result.thisNode, result) {.explain.}
+  result.kademlia = newKademliaProtocol(result.thisNode, result)
 
 proc recvPing(d: DiscoveryProtocol, node: Node,
               msgHash: MDigest[256]) {.inline.} =
@@ -252,7 +256,7 @@ proc processClient(transp: DatagramTransport,
     let a = Address(ip: raddr.address, udpPort: raddr.port, tcpPort: raddr.port)
     proto.receive(a, buf)
   except:
-    debug "receive failed", exception = getCurrentExceptionMsg()
+    debug "Receive failed", err = getCurrentExceptionMsg()
 
 proc open*(d: DiscoveryProtocol) =
   let ta = initTAddress(d.address.ip, d.address.udpPort)
@@ -269,7 +273,6 @@ proc run(d: DiscoveryProtocol) {.async.} =
 
 proc bootstrap*(d: DiscoveryProtocol) {.async.} =
   await d.kademlia.bootstrap(d.bootstrapNodes)
-
   discard d.run()
 
 proc resolve*(d: DiscoveryProtocol, n: NodeId): Future[Node] =

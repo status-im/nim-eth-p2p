@@ -77,18 +77,19 @@ proc listeningAddress*(node: EthereumNode): ENode =
   return initENode(node.keys.pubKey, node.address)
 
 proc startListening*(node: EthereumNode) =
-  trace "RLPx listener up", self = node.listeningAddress
   let ta = initTAddress(node.address.ip, node.address.tcpPort)
   if node.listeningServer == nil:
     node.listeningServer = createStreamServer(ta, processIncoming,
                                               {ReuseAddr},
                                               udata = cast[pointer](node))
   node.listeningServer.start()
+  info "RLPx listener up", self = node.listeningAddress
 
 proc connectToNetwork*(node: EthereumNode,
                        bootstrapNodes: seq[ENode],
                        startListening = true,
-                       enableDiscovery = true) {.async.} =
+                       enableDiscovery = true,
+                       minPeers = 10) {.async.} =
   assert node.connectionState == ConnectionState.None
 
   node.connectionState = Connecting
@@ -98,13 +99,11 @@ proc connectToNetwork*(node: EthereumNode,
 
   node.peerPool = newPeerPool(node, node.networkId,
                               node.keys, node.discovery,
-                              node.clientId, node.address.tcpPort)
+                              node.clientId, node.address.tcpPort,
+                              minPeers = minPeers)
 
   if startListening:
     eth_p2p.startListening(node)
-
-  if startListening:
-    node.listeningServer.start()
 
   if enableDiscovery:
     node.discovery.open()
