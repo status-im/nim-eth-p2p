@@ -168,3 +168,5 @@ type
     MessageTimeout,
     SubprotocolReason = 0x10
 
+proc `$`*(v: Capability): string =
+  v.name & '/' & $v.version

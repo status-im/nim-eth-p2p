@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Stratus
+Exec=stratus %F
+Icon=stratus
+Comment=Fun with nimbus
+Terminal=true

@@ -1,0 +1,5 @@
+DOtherSide/
+docker
+*.AppImage
+*.qmlc
+tmp/

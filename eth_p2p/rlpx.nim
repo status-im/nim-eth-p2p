@@ -1338,6 +1338,9 @@ proc rlpxConnect*(node: EthereumNode, remote: Node): Future[Peer] {.async.} =
 
     await postHelloSteps(result, response)
     ok = true
+    info "Peer connected",
+      enode=result.remote.node,
+      capabilities=result.network.capabilities
   except PeerDisconnected as e:
     if e.reason != TooManyPeers:
       debug "Unexpected disconnect during rlpxConnect", reason = e.reason
@@ -1415,6 +1418,9 @@ proc rlpxAccept*(node: EthereumNode,
     result.remote = newNode(initEnode(handshake.remoteHPubkey, address))
 
     await postHelloSteps(result, response)
+    info "Peer accepted",
+      enode=result.remote.node,
+      capabilities=result.network.capabilities
   except PeerDisconnected as e:
     if e.reason == AlreadyConnected:
       debug "Disconnect during rlpxAccept", reason = e.reason
