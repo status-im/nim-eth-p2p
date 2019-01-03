@@ -235,8 +235,6 @@ proc receive(d: DiscoveryProtocol, a: Address, msg: Bytes) =
           d.recvNeighbours(node, payload)
         of cmdFindNode:
           d.recvFindNode(node, payload)
-        else:
-          debug "Unknown command", cmdId
       else:
         trace "Received msg already expired", cmdId, a
     else:
