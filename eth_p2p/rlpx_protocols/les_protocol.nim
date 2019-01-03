@@ -86,7 +86,7 @@ proc removePeer(network: LesNetwork, peer: LesPeer) =
   network.delistFromFlowControl peer
   network.peers.excl peer
 
-template costQuantity(quantityExpr: int, max: int) {.pragma.}
+template costQuantity(quantityExpr, max: untyped) {.pragma.}
 
 proc getCostQuantity(fn: NimNode): tuple[quantityExpr, maxQuantity: NimNode] =
   # XXX: `getCustomPragmaVal` doesn't work yet on regular nnkProcDef nodes
