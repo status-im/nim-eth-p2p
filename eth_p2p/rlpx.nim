@@ -138,10 +138,9 @@ proc getMsgMetadata*(peer: Peer, msgId: int): (ProtocolInfo, ptr MessageInfo) =
 # Protocol info objects
 #
 
-proc newProtocol(name: string, version: int,
-                 peerInit: PeerStateInitializer,
-                 networkInit: NetworkStateInitializer): ProtocolInfo =
-  result = create ProtocolInfoObj
+proc initProtocol(name: string, version: int,
+                  peerInit: PeerStateInitializer,
+                  networkInit: NetworkStateInitializer): ProtocolInfoObj =
   result.name = name
   result.version = version
   result.messages = @[]
@@ -652,7 +651,7 @@ macro p2pProtocolImpl(name: static[string],
     initRlpWriter = bindSym "initRlpWriter"
     enterList = bindSym "enterList"
     messagePrinter = bindSym "messagePrinter"
-    newProtocol = bindSym "newProtocol"
+    initProtocol = bindSym "initProtocol"
     nextMsgResolver = bindSym "nextMsgResolver"
     read = bindSym "read"
     registerRequest = bindSym "registerRequest"
@@ -1075,7 +1074,8 @@ macro p2pProtocolImpl(name: static[string],
   result.add outTypes
   result.add quote do:
     # One global variable per protocol holds the protocol run-time data
-    var `protocol` = `newProtocol`(`shortName`, `version`, `peerInit`, `netInit`)
+    var p = `initProtocol`(`shortName`, `version`, `peerInit`, `netInit`)
+    var `protocol` = addr p
 
     # The protocol run-time data is available as a pseudo-field
     # (e.g. `p2p.protocolInfo`)
