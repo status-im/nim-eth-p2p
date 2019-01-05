@@ -4,7 +4,7 @@ import
   private/types, rlpx, ../eth_p2p
 
 type
-  Action = proc (p: Peer, data: Rlp): Future[void]
+  Action = proc (p: Peer, data: Rlp): Future[void] {.gcsafe.}
 
   ProtocolMessagePair = object
     protocol: ProtocolInfo
@@ -87,10 +87,10 @@ proc expectationViolationMsg(mock: MockConf,
   result.add "\n"
 
 proc addProtocol(mock: MockConf, p: ProtocolInfo): ProtocolInfo =
-  new result
+  result = create ProtocolInfoObj
   deepCopy(result[], p[])
 
-  proc incomingMsgHandler(p: Peer, receivedMsgId: int, rlp: Rlp): Future[void] =
+  proc incomingMsgHandler(p: Peer, receivedMsgId: int, rlp: Rlp): Future[void] {.gcsafe.} =
     let (receivedMsgProto, receivedMsgInfo) = p.getMsgMetadata(receivedMsgId)
     let expectedMsgIdx = mock.receivedMsgsCount
 

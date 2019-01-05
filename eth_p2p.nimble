@@ -24,7 +24,7 @@ requires "nim > 0.18.0",
          "json_serialization"
 
 proc runTest(name: string, defs = "", lang = "c") =
-  exec "nim " & lang & " " & defs & " -d:testing --experimental:ForLoopMacros -r tests/" & name
+  exec "nim " & lang & " " & defs & " -d:testing --threads:on --experimental:ForLoopMacros -r tests/" & name
 
 task test, "Runs the test suite":
   runTest "all_tests"

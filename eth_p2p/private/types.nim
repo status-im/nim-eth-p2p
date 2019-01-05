@@ -58,8 +58,8 @@ type
     observers*: Table[int, PeerObserver]
 
   PeerObserver* = object
-    onPeerConnected*: proc(p: Peer)
-    onPeerDisconnected*: proc(p: Peer)
+    onPeerConnected*: proc(p: Peer) {.gcsafe.}
+    onPeerDisconnected*: proc(p: Peer) {.gcsafe.}
 
   Capability* = object
     name*: string
@@ -80,7 +80,7 @@ type
   ## Quasy-private types. Use at your own risk.
   ##
 
-  ProtocolInfo* = ref object
+  ProtocolInfoObj* = object
     name*: string
     version*: int
     messages*: seq[MessageInfo]
@@ -92,6 +92,8 @@ type
     networkStateInitializer*: NetworkStateInitializer
     handshake*: HandshakeStep
     disconnectHandler*: DisconnectionHandler
+
+  ProtocolInfo* = ptr ProtocolInfoObj
 
   MessageInfo* = object
     id*: int
@@ -105,8 +107,8 @@ type
 
   Dispatcher* = ref object # private
     # The dispatcher stores the mapping of negotiated message IDs between
-    # two connected peers. The dispatcher objects are shared between
-    # connections running with the same set of supported protocols.
+    # two connected peers. The dispatcher may be shared between connections
+    # running with the same set of supported protocols.
     #
     # `protocolOffsets` will hold one slot of each locally supported
     # protocol. If the other peer also supports the protocol, the stored
@@ -131,13 +133,13 @@ type
 
   # Private types:
   MessageHandlerDecorator* = proc(msgId: int, n: NimNode): NimNode
-  MessageHandler* = proc(x: Peer, msgId: int, data: Rlp): Future[void]
-  MessageContentPrinter* = proc(msg: pointer): string
-  RequestResolver* = proc(msg: pointer, future: FutureBase)
-  NextMsgResolver* = proc(msgData: Rlp, future: FutureBase)
-  PeerStateInitializer* = proc(peer: Peer): RootRef
-  NetworkStateInitializer* = proc(network: EthereumNode): RootRef
-  HandshakeStep* = proc(peer: Peer): Future[void]
+  MessageHandler* = proc(x: Peer, msgId: int, data: Rlp): Future[void] {.gcsafe.}
+  MessageContentPrinter* = proc(msg: pointer): string {.gcsafe.}
+  RequestResolver* = proc(msg: pointer, future: FutureBase) {.gcsafe.}
+  NextMsgResolver* = proc(msgData: Rlp, future: FutureBase) {.gcsafe.}
+  PeerStateInitializer* = proc(peer: Peer): RootRef {.gcsafe.}
+  NetworkStateInitializer* = proc(network: EthereumNode): RootRef {.gcsafe.}
+  HandshakeStep* = proc(peer: Peer): Future[void] {.gcsafe.}
   DisconnectionHandler* = proc(peer: Peer,
                                reason: DisconnectionReason): Future[void] {.gcsafe.}
 

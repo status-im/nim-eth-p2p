@@ -100,7 +100,7 @@ type
     ## XXX: really big messages can cause excessive mem usage when using msg \
     ##      count
 
-  FilterMsgHandler* = proc(msg: ReceivedMessage) {.closure.}
+  FilterMsgHandler* = proc(msg: ReceivedMessage) {.gcsafe, closure.}
 
   Filter* = object
     src: Option[PublicKey]
@@ -581,7 +581,7 @@ proc subscribeFilter*(filters: var Filters, filter: Filter,
   debug "Filter added", filter = id
   return id
 
-proc notify*(filters: var Filters, msg: Message) =
+proc notify*(filters: var Filters, msg: Message) {.gcsafe.} =
  var decoded: Option[DecodedPayload]
  var keyHash: Hash
 
@@ -667,10 +667,10 @@ type
     filters*: Filters
     config*: WhisperConfig
 
-proc run(peer: Peer) {.async.}
-proc run(node: EthereumNode, network: WhisperNetwork) {.async.}
+proc run(peer: Peer) {.gcsafe, async.}
+proc run(node: EthereumNode, network: WhisperNetwork) {.gcsafe, async.}
 
-proc initProtocolState*(network: WhisperNetwork, node: EthereumNode) =
+proc initProtocolState*(network: WhisperNetwork, node: EthereumNode) {.gcsafe.} =
   network.queue = initQueue(defaultQueueCapacity)
   network.filters = initTable[string, Filter]()
   network.config.bloom = fullBloom()
