@@ -169,17 +169,17 @@ proc cmp*(lhs, rhs: ProtocolInfo): int =
       return int16(lhs.name[i]) - int16(rhs.name[i])
   return 0
 
-proc messagePrinter[MsgType](msg: pointer): string =
+proc messagePrinter[MsgType](msg: pointer): string {.gcsafe.} =
   result = ""
   # TODO: uncommenting the line below increases the compile-time
   # tremendously (for reasons not yet known)
   # result = $(cast[ptr MsgType](msg)[])
 
-proc nextMsgResolver[MsgType](msgData: Rlp, future: FutureBase) =
+proc nextMsgResolver[MsgType](msgData: Rlp, future: FutureBase) {.gcsafe.} =
   var reader = msgData
   Future[MsgType](future).complete reader.readRecordType(MsgType, MsgType.rlpFieldsCount > 1)
 
-proc requestResolver[MsgType](msg: pointer, future: FutureBase) =
+proc requestResolver[MsgType](msg: pointer, future: FutureBase) {.gcsafe.} =
   var f = Future[Option[MsgType]](future)
   if not f.finished:
     if msg != nil:
