@@ -301,7 +301,7 @@ p2pProtocol les(version = lesVersion,
     proc getBlockBodies(
            peer: Peer,
            blocks: openarray[KeccakHash]) {.
-           costQuantity(blocks.len, max = maxBodiesFetch).} =
+           costQuantity(blocks.len, max = maxBodiesFetch), gcsafe.} =
 
       let blocks = peer.network.chain.getBlockBodies(blocks)
       await peer.blockBodies(reqId, updateBV(), blocks)
