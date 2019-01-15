@@ -75,7 +75,7 @@ p2pProtocol eth(version = protocolVersion,
     discard
 
   requestResponse:
-    proc getBlockHeaders(peer: Peer, request: BlocksRequest) =
+    proc getBlockHeaders(peer: Peer, request: BlocksRequest) {.gcsafe.} =
       if request.maxResults > uint64(maxHeadersFetch):
         await peer.disconnect(BreachOfProtocol)
         return
@@ -85,7 +85,7 @@ p2pProtocol eth(version = protocolVersion,
     proc blockHeaders(p: Peer, headers: openarray[BlockHeader])
 
   requestResponse:
-    proc getBlockBodies(peer: Peer, hashes: openarray[KeccakHash]) =
+    proc getBlockBodies(peer: Peer, hashes: openarray[KeccakHash]) {.gcsafe.} =
       if hashes.len > maxBodiesFetch:
         await peer.disconnect(BreachOfProtocol)
         return

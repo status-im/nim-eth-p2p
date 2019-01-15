@@ -4,7 +4,7 @@ import
 # TODO: Perhaps we can move this to eth-common
 
 proc getBlockHeaders*(db: AbstractChainDb,
-                      req: BlocksRequest): seq[BlockHeader] =
+                      req: BlocksRequest): seq[BlockHeader] {.gcsafe.} =
   result = newSeqOfCap[BlockHeader](req.maxResults)
 
   var foundBlock: BlockHeader
@@ -18,7 +18,7 @@ proc getBlockHeaders*(db: AbstractChainDb,
 
 template fetcher*(fetcherName, fetchingFunc, InputType, ResultType: untyped) =
   proc fetcherName*(db: AbstractChainDb,
-                    lookups: openarray[InputType]): seq[ResultType] =
+                    lookups: openarray[InputType]): seq[ResultType] {.gcsafe.} =
     for lookup in lookups:
       let fetched = fetchingFunc(db, lookup)
       if fetched.hasData:
