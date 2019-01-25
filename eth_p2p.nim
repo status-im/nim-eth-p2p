@@ -159,5 +159,5 @@ proc randomPeerWith*(node: EthereumNode, Protocol: type): Peer =
   for p in node.peers(Protocol):
     candidates.add(p)
   if candidates.len > 0:
-    return candidates[rand(candidates.len)]
+    return candidates.rand()
 
